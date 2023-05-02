@@ -2,6 +2,19 @@
 
 import subprocess, sys, os, argparse
 from pxr import *
+from validateMesh import validateMesh
+from validateMaterial import validateMaterial
+
+def validateFile(file, verbose):
+	stage = Usd.Stage.Open(file)
+	success = True
+	predicate = Usd.TraverseInstanceProxies(Usd.PrimIsActive & Usd.PrimIsDefined & ~Usd.PrimIsAbstract)
+	for prim in stage.Traverse(predicate):
+		if prim.GetTypeName() == "Mesh":
+			success = validateMesh(prim, verbose) and success
+		if prim.GetTypeName() == "Material":
+			success = validateMaterial(prim, verbose) and success
+	return success
 
 def main(argumentList):
 	parser = argparse.ArgumentParser()
@@ -18,23 +31,22 @@ def main(argumentList):
 			print "Checking file", filename
 			print "Running usdchecker"
 			usdCheckerResult = (subprocess.call(usdcheckerArgs,) == 0)
-		else: 
+		else:
 			FNULL = open(os.devnull, 'w')
 			usdCheckerResult = (subprocess.call(usdcheckerArgs,stdout=FNULL,stderr=FNULL) == 0)
 
-		from meshValidate import meshValidate
-		meshSuccess = meshValidate(filename, verboseOutput)
-		totalSuccess = totalSuccess and usdCheckerResult and meshSuccess
-		if verboseOutput: 
+		success = usdCheckerResult and validateFile(filename, verboseOutput)
+
+		totalSuccess = success and totalSuccess
+		if verboseOutput:
 			print
-		else:
-			print "usdARKitChecker:", ("[Pass]" if totalSuccess else "[Fail]"), filename
+		print "usdARKitChecker:", ("[Pass]" if success else "[Fail]"), filename
 
 	if totalSuccess:
-	    return 0
+		return 0
 	else:
-	    return 1
+		return 1
 
 if __name__ == '__main__':
-    argumentList = sys.argv[1:]
-    sys.exit(main(argumentList))
+	argumentList = sys.argv[1:]
+	sys.exit(main(argumentList))

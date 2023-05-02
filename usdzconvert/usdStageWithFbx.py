@@ -1,4 +1,3 @@
-#!/usr/bin/python
 from pxr import *
 import os, os.path
 import numpy
@@ -69,6 +68,10 @@ class FbxNodeManager(usdUtils.NodeManager):
         return GfMatrix4dWithFbxMatrix(fbxNode.EvaluateLocalTransform())
 
 
+    def overrideGetWorldTransformGfMatrix4d(self, fbxNode):
+        return GfMatrix4dWithFbxMatrix(fbxNode.EvaluateGlobalTransform())
+
+
     def overrideGetParent(self, fbxNode):
         return fbxNode.GetParent()
 
@@ -101,8 +104,8 @@ class FbxConverter:
         self.fps = fbx.FbxTime.GetFrameRate(fbx.FbxTime.GetGlobalTimeMode())
         self.asset.setFPS(self.fps)
 
-        self.nodeMan = FbxNodeManager()
-        self.skinning = usdUtils.Skinning(self.nodeMan)
+        self.nodeManager = FbxNodeManager()
+        self.skinning = usdUtils.Skinning(self.nodeManager)
 
     
     def loadFbxScene(self, fbxPath):
@@ -337,7 +340,7 @@ class FbxConverter:
                 if len(uvSets) > 0:
                     fbxLayerElementUV = fbxMesh.GetLayer(layerIdx).GetUVSets()[0]
                     texCoordSet = str(fbxLayerElementUV.GetName())
-                    if texCoordSet == '' or texCoordSet == 'default':
+                    if layerIdx == 0 or texCoordSet == '' or texCoordSet == 'default':
                         texCoordSet = 'st'
                     else:
                         texCoordSet = usdUtils.makeValidIdentifier(texCoordSet)
@@ -384,32 +387,31 @@ class FbxConverter:
             for j in range(len(indicesPerVertex)):
                 jointIndices[i * components + j] = indicesPerVertex[j]
                 weights[i * components + j] = weightsPacked[i][j]
+        weights = Vt.FloatArray(weights)
+        UsdSkel.NormalizeWeights(weights, components)
 
         usdSkelBinding = UsdSkel.BindingAPI(usdMesh)
         usdSkelBinding.CreateJointIndicesPrimvar(False, components).Set(jointIndices)
         usdSkelBinding.CreateJointWeightsPrimvar(False, components).Set(weights)
 
-        root = skeleton.getRoot() 
-        skelRootWorldTransform = GfMatrix4dWithFbxMatrix(root.EvaluateGlobalTransform())
-        meshNodeWorldMatrix = GfMatrix4dWithFbxMatrix(fbxNode.EvaluateGlobalTransform())
-        geometricTransform = GfMatrix4dWithFbxMatrix(getFbxNodeGeometricTransform(fbxNode))
+        bindTransform = Gf.Matrix4d(1)
+        if fbxSkin.GetClusterCount() > 0:
+            # FBX stores bind transform matrix for the skin in each cluster
+            # get it from the first one
+            fbxCluster = fbxSkin.GetCluster(0)
+            fbxBindTransform = fbx.FbxAMatrix()
+            fbxBindTransform = fbxCluster.GetTransformMatrix(fbxBindTransform)
+            bindTransform = GfMatrix4dWithFbxMatrix(fbxBindTransform)
 
-        transform  = meshNodeWorldMatrix * geometricTransform
-        if root in skeleton.bindMatrices:
-            rootBindMatrix = skeleton.bindMatrices[root]
-            transform  = transform * skelRootWorldTransform.GetInverse() * rootBindMatrix
-
-        usdSkelBinding.CreateGeomBindTransformAttr(transform)
+        usdSkelBinding.CreateGeomBindTransformAttr(bindTransform)
         usdSkelBinding.CreateSkeletonRel().AddTarget(skeleton.usdSkeleton.GetPath())
 
 
     def bindRigidDeformation(self, fbxNode, usdMesh, skeleton):
-        skelRootParentWorldTransform = GfMatrix4dWithFbxMatrix(skeleton.getRoot().GetParent().EvaluateGlobalTransform())
         meshNodeWorldMatrix = GfMatrix4dWithFbxMatrix(fbxNode.EvaluateGlobalTransform())
-        differenceTransform = meshNodeWorldMatrix * skelRootParentWorldTransform.GetInverse()
-        transform = GfMatrix4dWithFbxMatrix(getFbxNodeGeometricTransform(fbxNode)) * differenceTransform
+        transform = GfMatrix4dWithFbxMatrix(getFbxNodeGeometricTransform(fbxNode)) * meshNodeWorldMatrix
 
-        skeleton.bindRigidDeformation(fbxNode, usdMesh, transform)
+        skeleton.bindRigidDeformation(fbxNode, usdMesh, GfMatrix4dWithFbxMatrix(transform))
 
 
     def bindMaterials(self, fbxMesh, usdMesh):
@@ -773,7 +775,7 @@ class FbxConverter:
                 if skeleton is None:
                     skeleton = self.skinning.findSkeletonByJoint(fbxNode)
                 if skeleton is not None:
-                    skeleton.makeUsdSkeleton(self.usdStage, newPath)
+                    skeleton.makeUsdSkeleton(self.usdStage, newPath, self.nodeManager)
                     if self.verbose:
                         print indent + "SkelRoot:", nodeName
                     underSkeleton = skeleton

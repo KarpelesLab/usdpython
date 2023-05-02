@@ -1,4 +1,3 @@
-#!/usr/bin/python
 from pxr import *
 
 import struct

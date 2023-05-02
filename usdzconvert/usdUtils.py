@@ -1,5 +1,3 @@
-#!/usr/bin/python
-
 import os.path
 from shutil import copyfile
 import re
@@ -52,6 +50,9 @@ def resolvePath(textureFileName, folder):
         return ''
     if os.path.isfile(textureFileName):
         return textureFileName
+
+    if folder == '':
+        folder = os.getcwd()
 
     path = textureFileName.replace('\\', '/')
     basename = os.path.basename(path)
@@ -410,6 +411,9 @@ class NodeManager:
         # assert 0, "Can't find overriden method overrideGetLocaLTransform for node manager"
         pass
 
+    def overrideGetWorldTransformGfMatrix4d(self, node):
+        pass
+
     def overrideGetParent(self, node):
         pass
 
@@ -487,7 +491,7 @@ class Skeleton:
         return self.joints[0] # TODO: check if does exist
 
 
-    def makeUsdSkeleton(self, usdStage, sdfPath):
+    def makeUsdSkeleton(self, usdStage, sdfPath, nodeManager):
         if self.usdSkeleton is not None:
             return self.usdSkeleton
         self.sdfPath = sdfPath
@@ -500,7 +504,7 @@ class Skeleton:
             if joint in self.bindMatrices:
                 bindMatrices.append(self.bindMatrices[joint])
             else:
-                bindMatrices.append(Gf.Matrix4d(1))
+                bindMatrices.append(nodeManager.overrideGetWorldTransformGfMatrix4d(joint))
 
         usdGeom = UsdSkel.Root.Define(usdStage, sdfPath)
 
@@ -541,27 +545,27 @@ class Skeleton:
 
 
     # private:
-    def _collectJoints(self, node, path, nodeMan):
+    def _collectJoints(self, node, path, nodeManager):
         self.joints.append(node)
-        name = nodeMan.overrideGetName(node)
+        name = nodeManager.overrideGetName(node)
         newPath = path + name
         self.jointPaths[node] = newPath
-        self.restMatrices[node] = nodeMan.overrideGetLocalTransformGfMatrix4d(node)
-        for child in nodeMan.overrideGetChildren(node):
-            self._collectJoints(child, newPath + '/', nodeMan)
+        self.restMatrices[node] = nodeManager.overrideGetLocalTransformGfMatrix4d(node)
+        for child in nodeManager.overrideGetChildren(node):
+            self._collectJoints(child, newPath + '/', nodeManager)
 
 
 class Skinning:
-    def __init__(self, nodeMan):
+    def __init__(self, nodeManager):
         self.skins = []
         self.skeletons = []
-        self.nodeMan = nodeMan
+        self.nodeManager = nodeManager
         self.joints = {} # joint set
 
 
     def createSkeleton(self, root):
         skeleton = Skeleton()
-        skeleton._collectJoints(root, '', self.nodeMan)
+        skeleton._collectJoints(root, '', self.nodeManager)
         self.skeletons.append(skeleton)
         return skeleton
 
@@ -571,7 +575,7 @@ class Skinning:
             if len(skin.joints) < 1:
                 continue
             if skin.root == None:
-                skin.root = self.nodeMan.findRoot(skin.joints)
+                skin.root = self.nodeManager.findRoot(skin.joints)
             skeleton = self.findSkeletonByJoint(skin.joints[0])
             if skeleton is None:
                 skeleton = self.createSkeleton(skin.root)

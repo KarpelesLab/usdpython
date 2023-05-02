@@ -1,4 +1,3 @@
-#!/usr/bin/python
 from pxr import *
 
 import json
@@ -266,6 +265,10 @@ class glTFNodeManager(usdUtils.NodeManager):
         return getMatrixTransform(gltfNode)
 
 
+    def overrideGetWorldTransformGfMatrix4d(self, strNodeIdx):
+        return self.converter.getWorldTransform(int(strNodeIdx))
+
+
     def overrideGetParent(self, node):
         parentIdx = self.converter.getParent(int(node))
         if parentIdx == -1:
@@ -339,8 +342,8 @@ class glTFConverter:
             return
         self.readAllBuffers()
 
-        self.nodeMan = glTFNodeManager(self)
-        self.skinning = usdUtils.Skinning(self.nodeMan)
+        self.nodeManager = glTFNodeManager(self)
+        self.skinning = usdUtils.Skinning(self.nodeManager)
 
         self.postponeUsdMeshToSkeleton = {} # if USD mesh created before UsdSkeleton, bind it later 
 
@@ -815,12 +818,8 @@ class glTFConverter:
                 else:
                     self.postponeUsdMeshToSkeleton[usdMesh] = skin
         elif skeleton is not None:
-            differenceTransform = Gf.Matrix4d(1)
-            if str(nodeIdx) in skeleton.bindMatrices:
-                skelRootParentWorldTransform = self.getWorldTransform(self.getParent(skeleton.getRoot()))
-                meshNodeWorldMatrix = self.getWorldTransform(nodeIdx)
-                differenceTransform = meshNodeWorldMatrix * skelRootParentWorldTransform.GetInverse()
-            skeleton.bindRigidDeformation(str(nodeIdx), usdMesh, differenceTransform)
+            meshNodeWorldMatrix = self.getWorldTransform(nodeIdx)
+            skeleton.bindRigidDeformation(str(nodeIdx), usdMesh, meshNodeWorldMatrix)
 
         attributes = gltfPrimitive['attributes']
 
@@ -968,7 +967,7 @@ class glTFConverter:
         if skeleton is not None:
             if self.verbose:
                 print indent + 'SkelRoot:', name
-            usdGeom = skeleton.makeUsdSkeleton(self.usdStage, newPath)
+            usdGeom = skeleton.makeUsdSkeleton(self.usdStage, newPath, self.nodeManager)
             underSkeleton = skeleton
         elif skeletonByJoint is not None and 'mesh' not in gltfNode:
             pass

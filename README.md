@@ -2,17 +2,45 @@
 
 This archive contains
 - `usdzconvert`, a Python-based tool to convert from various file formats to usdz
+- `usdARKitChecker`, a Python-based tool for usdz validation
 - precompiled macOS Python modules for Pixar's USD library
 - a set of sample scripts that demonstrate how to write usd files
 - the `fixOpacity` tool
+- usdzcreateassetlib, a standalone tool to generate an asset library from multiple assets
 
-## usdzconvert (version 0.59)
+The easiest way to start using these command-line tools is to double-click `USD.command` in the Finder. This will open a Terminal window with all necessary environment variables set.
 
-usdzconvert is a Python script that converts obj and gltf models to usdz (with further formats coming soon).
-It also performs asset validation on the generated usdz (using Pixar's usdchecker and further checks).
+For more details, including demos, see the WWDC 2019 session "Working with USD": 
+https://developer.apple.com/videos/play/wwdc2019/602/
+
+## usdzconvert (version 0.60)
+
+`usdzconvert` is a Python script that converts obj, gltf, fbx, abc, and usda/usdc/usd assets to usdz.
+It also performs asset validation on the generated usdz.
 For more information, run 
 
     usdzconvert -h
+
+## usdARKitChecker
+
+`usdARKitChecker` is a Python script that validates existing usdz files. It is automatically run by `usdzconvert`, but can also be used as a stand-alone tool to validate files from other sources.
+For more information, run 
+
+    usdARKitChecker -h
+
+Currently `usdARKitChecker` consists of three parts:
+- validation through Pixar's `usdchecker`
+- mesh attribute validation
+- UsdPreviewSurface material validation
+
+### FBX Support
+
+Note that FBX support in `usdzconvert` requires both Autodesk's FBX SDK and FBX Python bindings to be installed on your system.
+To make FBX bindings available to Python, uncomment the line 
+
+    # export PYTHONPATH=$PYTHONPATH:/Applications/Autodesk/FBX\ Python\ SDK/2019.0/lib/Python27_x86
+
+in `USD.command`, and adjust the path to point to the location of fbx.so (for Python 2.7).
 
 ## Precompiled macOS Python Modules for Pixar's USD Library (Version 19.05)
 
@@ -20,10 +48,12 @@ This library was compiled using version 19.05 of [the public USD GitHub reposito
 
     python USD/build_scripts/build_usd.py --build-args TBB,extra_inc=big_iron.inc --python --no-imaging --docs --no-usdview --build-monolithic USDPython
 
+If you prefer to set your environment variables directly , 
+
 To start using USD in Python, set your PATH and PYTHONPATH variables as follows (replace `<PATH_TO_USDPYTHON>` with the path to this USDPython folder):
 
     export PATH=$PATH:<PATH_TO_USDPYTHON>/USD
-    export PYTHONPATH=$PYTHONPATH:<PATH_TO_USDPYTHON>/USD
+    export PYTHONPATH=$PYTHONPATH:<PATH_TO_USDPYTHON>/USD/lib/python
 
 You should then be able to start using the USD library in Python:
 
@@ -56,4 +86,9 @@ Each script generates a .usd and a .usdz file in the `assets` sub folder, and al
 If you converted your usdz asset with Xcode's usdz_converter, and it has translucent materials that render opaque in iOS 13, use this script to correct the asset's translucent materials:
 
     fixOpacity model.usdz
+
+## usdzcreateassetlib
+
+usdzcreateassetlib is a script that generates a single-file asset library from multiple usdz assets. The result is a nested usdz file that contains the source usdz assets and references them in a variant set.
+This script does not depend on the USD library, which should make it easy to deploy on servers.
 

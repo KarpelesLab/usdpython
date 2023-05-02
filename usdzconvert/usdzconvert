@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/python
 import os.path
 from os import chdir
 import sys
@@ -27,7 +27,7 @@ class ConvertExit(Exception):
 
 
 class USDParameters:
-    version = 0.59
+    version = 0.60
     materialsPath = '/Materials'
 
     def __init__(self, usdStage, verbose, url, copyright, assetPath):
@@ -53,6 +53,7 @@ class ParserOut:
         self.copyTextures = False
         self.url = ''
         self.copyright = ''
+        self.metersPerUnit = 0
         material = usdUtils.Material('')
         self.materials.append(material)
 
@@ -73,6 +74,7 @@ class Parser:
                    [-url url]\n\
                    [-copyright copyright]\n\
                    [-copytextures]\n\
+                   [-metersPerUnit value]\n\
                    [-m materialName]        [-texCoordSet name]\n\
                    [-diffuseColor           r,g,b]\n\
                    [-diffuseColor           <file> fr,fg,fb]\n\
@@ -97,7 +99,7 @@ class Parser:
     def printHelpAndExit(self):
         self.printUsage()
         print '\n\
-Converts 3D model file to usd/usdz.\n\
+Converts 3D model file to usd/usda/usdc/usdz.\n\
 \npositional arguments:\n\
   inputFiles            Input files: OBJ/glTF files.\n\
 \noptional arguments:\n\
@@ -109,6 +111,7 @@ Converts 3D model file to usd/usdz.\n\
   -copyright "copyright message"\n\
                         Add copyright metadata\n\
   -copytextures         Copy texture files (for .usd/usda/usdc) workflows\n\
+  -metersPerUnit value  Set metersPerUnit attribute with float value\n\
   -m materialName       Subsequent material arguments apply to this material.\n\
                         If no material is present in input file, a material of\n\
                         this name will be generated.\n\
@@ -170,7 +173,8 @@ Converts 3D model file to usd/usdz.\n\
         raise ConvertExit()
 
 
-    def printError(self, message):
+    def printErrorUsageAndExit(self, message):
+        self.printUsage()
         print 'Error:', message
         raise ConvertError()
 
@@ -184,7 +188,7 @@ Converts 3D model file to usd/usdz.\n\
             if os.path.isfile(filename):
                 self.out.argumentFile = filename
         if self.out.argumentFile == '':
-            self.printError("failed to load argument file:" + filename)
+            self.printErrorUsageAndExit("failed to load argument file:" + filename)
 
         with open(self.out.argumentFile) as file:
             for line in file:
@@ -210,20 +214,21 @@ Converts 3D model file to usd/usdz.\n\
 
     def getParameters(self, count, argument):
         if self.argumentIndex + count >= len(self.arguments):
-            self.printError('argument ' + argument + ' needs more parameters')
+            self.printErrorUsageAndExit('argument ' + argument + ' needs more parameters')
 
         self.argumentIndex += count
         if count == 1:
             parameter = self.arguments[self.argumentIndex]
             if parameter[0] == '-' and not isFloat(parameter):
-                self.printError('unexpected parameter ' + parameter + ' for argument ' + argument)
+                self.printErrorUsageAndExit('unexpected parameter ' + parameter + ' for argument ' + argument)
             return self.arguments[self.argumentIndex]
         else:
             parameters = self.arguments[(self.argumentIndex - count + 1):(self.argumentIndex + 1)]
             for parameter in parameters:
                 if parameter[0] == '-' and not isFloat(parameter):
-                    self.printError('unexpected parameter ' + parameter + ' for argument ' + argument)
+                    self.printErrorUsageAndExit('unexpected parameter ' + parameter + ' for argument ' + argument)
             return parameters
+
 
     def isNextArgumentsAreFloats(self, count):
         if self.argumentIndex + count >= len(self.arguments):
@@ -308,6 +313,11 @@ Converts 3D model file to usd/usdz.\n\
                 elif '-url' == argument:
                     self.out.url = self.getParameters(1, argument)
                     print self.out.url
+                elif '-metersPerUnit' == argument:
+                    metersPerUnit = self.getParameters(1, argument)
+                    if not isFloat(metersPerUnit) or float(metersPerUnit) <= 0:
+                        self.printErrorUsageAndExit('expected positive float value for argument ' + argument)
+                    self.out.metersPerUnit = float(metersPerUnit)
                 elif '-m' == argument:
                     name = self.getParameters(1, argument)
                     material = usdUtils.Material(name)
@@ -322,7 +332,7 @@ Converts 3D model file to usd/usdz.\n\
                 else:
                     errorValue = self.processInputArgument(argument)
                     if errorValue:
-                        self.printError('unknown argument ' + argument)
+                        self.printErrorUsageAndExit('unknown argument ' + argument)
             else:
                 # parse input/output filenames
                 if self.out.inFilePath == '':
@@ -332,12 +342,12 @@ Converts 3D model file to usd/usdz.\n\
                 else:
                     print 'Input file:', self.out.inFilePath
                     print 'Output file:', self.out.outFilePath
-                    self.printError('unknown argument ' + argument)
+                    self.printErrorUsageAndExit('unknown argument ' + argument)
 
             self.argumentIndex += 1
 
         if self.out.inFilePath == '':
-            self.printError('too few arguments')
+            self.printErrorUsageAndExit('too few arguments')
 
         return self.out
 
@@ -461,21 +471,6 @@ def findUsdMaterial(params, name):
     return findUsdMaterialRecursively(params, params.usdStage.GetPseudoRoot(), name, byPath)
 
 
-def createDefaultPrim(usdStage, usdPath):
-    fileName = os.path.basename(usdPath)
-    assetName = fileName[:fileName.find('.')]
-    assetName = usdUtils.makeValidIdentifier(assetName)
-
-    assetPath = '/' + assetName
-
-    # create root prim
-    rootPrim = usdStage.DefinePrim(assetPath, 'Xform')
-    rootPrim.SetAssetInfoByKey('name', assetName)
-    Usd.ModelAPI(rootPrim).SetKind('component')
-    usdStage.SetDefaultPrim(rootPrim)
-    return rootPrim
-
-
 def copyTexturesFromStageToFolder(params, srcPath, folder):
     copiedFiles = {}
     srcFolder = os.path.dirname(srcPath)
@@ -534,6 +529,7 @@ def copyMaterialTextures(params, material, srcPath, dstPath, folder):
             usdUtils.copy(input.file, folder + '/' + basename, params.verbose)
             input.file = basename
 
+
 def createStageMetadata(params):
     params.usdStage.SetMetadataByDictKey("customLayerData", "creator", "usdzconvert preview " + str(params.version))
     if params.url != '':
@@ -558,11 +554,11 @@ def process(argumentList):
                 srcPath = parserOut.inFilePath
 
     if srcPath == '':
-        parser.printError('input file ' + parserOut.inFilePath + ' does not exist.')
+        parser.printErrorUsageAndExit('input file ' + parserOut.inFilePath + ' does not exist.')
 
     fileAndExt = os.path.splitext(srcPath)
     if len(fileAndExt) != 2:
-        parser.printError('input file ' + parserOut.inFilePath + ' has unsupported file extension.')
+        parser.printErrorUsageAndExit('input file ' + parserOut.inFilePath + ' has unsupported file extension.')
 
     print 'Input file:', srcPath
     srcExt = fileAndExt[1].lower()
@@ -578,14 +574,14 @@ def process(argumentList):
 
     dstFileAndExt = os.path.splitext(dstPath)
     if len(dstFileAndExt) != 2:
-        parser.printError('output file ' + dstPath + ' has unsupported file extension.')
+        parser.printErrorUsageAndExit('output file ' + dstPath + ' has unsupported file extension.')
 
     if not dstIsUsdz:
         dstExt = dstFileAndExt[1].lower()
         if dstExt == '.usdz':
             dstIsUsdz = True
         elif dstExt != '.usd' and dstExt != '.usdc' and dstExt != '.usda':
-            parser.printError('output file ' + dstPath + ' should have .usdz, .usdc, .usda or .usd extension.')
+            parser.printErrorUsageAndExit('output file ' + dstPath + ' should have .usdz, .usdc, .usda or .usd extension.')
 
     tmpFolder = tempfile.mkdtemp('usdzconvert')
 
@@ -593,8 +589,6 @@ def process(argumentList):
     tmpPath = dstFileAndExt[0] + '.usdc' if dstIsUsdz else dstPath
     tmpBasename = os.path.basename(tmpPath)
     tmpPath = tmpFolder + '/' + tmpBasename
-
-    usdaPath = dstFileAndExt[0] + '.usda'
 
     srcIsUsd = False;
     usdStage = None
@@ -611,8 +605,19 @@ def process(argumentList):
         global usdStageWithFbx_module
         usdStageWithFbx_module = importlib.import_module("usdStageWithFbx")
         usdStage = usdStageWithFbx_module.usdStageWithFbx(srcPath, tmpPath, parserOut.verbose)
+    elif '.usd' == srcExt or '.usda' == srcExt or '.usdc' == srcExt:
+        usdStage = Usd.Stage.Open(srcPath)
+        srcIsUsd = True;
+    elif '.abc' == srcExt:
+        usdStage = Usd.Stage.Open(srcPath)
+        # To update Alembic USD Stage, first save it to temporary .usdc and reload it
+        tmpUSDC = tmpPath + '.usdc'
+        usdStage.GetRootLayer().Export(tmpUSDC)
+        if parserOut.verbose:
+            print 'Temporary USDC file:', tmpUSDC
+        usdStage = Usd.Stage.Open(tmpUSDC)
     else:
-        parser.printError('input file ' + parserOut.inFilePath + ' has unsupported file extension.')
+        parser.printErrorUsageAndExit('input file ' + parserOut.inFilePath + ' has unsupported file extension.')
 
     if usdStage == None:
         print "Error: failed to create USD stage."
@@ -621,10 +626,12 @@ def process(argumentList):
     params = USDParameters(usdStage, parserOut.verbose, parserOut.url, parserOut.copyright, tmpPath)
     createStageMetadata(params)
 
+    if parserOut.metersPerUnit != 0:
+        usdStage.SetMetadata("metersPerUnit", parserOut.metersPerUnit)
+
+    rootPrim = None
     if usdStage.HasDefaultPrim():
         rootPrim = usdStage.GetDefaultPrim()
-    else:
-        rootPrim = createDefaultPrim(usdStage, tmpPath)
 
     if rootPrim != None:
         params.assetName = rootPrim.GetName()
@@ -636,34 +643,38 @@ def process(argumentList):
         # copy textures to temporary folder while creating usdz
         copyTexturesFromStageToFolder(params, srcPath, tmpFolder)
 
-    # update usd materials with command line material arguments
-    for material in parserOut.materials:
-        if material.name == '':
-            # if materials are not specified, then apply default material to all materials
-            if not material.isEmpty():
-                addDefaultMaterialToGeometries(params, params.usdStage.GetPseudoRoot())
+    if srcIsUsd:
+        if not (len(parserOut.materials) == 1 and parserOut.materials[0].isEmpty()):
+            print 'Warning: Material arguments are ignored for .usda/usdc input files.'
+    else:
+        # update usd materials with command line material arguments
+        for material in parserOut.materials:
+            if material.name == '':
+                # if materials are not specified, then apply default material to all materials
+                if not material.isEmpty():
+                    addDefaultMaterialToGeometries(params, params.usdStage.GetPseudoRoot())
 
-                for path, usdMaterial in params.usdMaterials.iteritems():
-                    surfaceShader = material.getUsdSurfaceShader(usdMaterial, params.usdStage)
-                    copyMaterialTextures(params, material, srcPath, dstPath, tmpFolder)
-                    material.updateUsdMaterial(usdMaterial, surfaceShader, params.usdStage)
-            continue
+                    for path, usdMaterial in params.usdMaterials.iteritems():
+                        surfaceShader = material.getUsdSurfaceShader(usdMaterial, params.usdStage)
+                        copyMaterialTextures(params, material, srcPath, dstPath, tmpFolder)
+                        material.updateUsdMaterial(usdMaterial, surfaceShader, params.usdStage)
+                continue
 
-        usdMaterial = findUsdMaterial(params, material.path if material.path else material.name)
+            usdMaterial = findUsdMaterial(params, material.path if material.path else material.name)
 
-        if usdMaterial is not None:
-            # if material does exist remove it
-            usdStage.RemovePrim(usdMaterial.GetPrim().GetPath())
-            usdMaterial = None
+            if usdMaterial is not None:
+                # if material does exist remove it
+                usdStage.RemovePrim(usdMaterial.GetPrim().GetPath())
+                usdMaterial = None
 
-        usdMaterial = material.makeUsdMaterial(params.asset)
+            usdMaterial = material.makeUsdMaterial(params.asset)
 
-        if usdMaterial is None:
-            continue
+            if usdMaterial is None:
+                continue
 
-        surfaceShader = material.getUsdSurfaceShader(usdMaterial, params.usdStage)
-        copyMaterialTextures(params, material, srcPath, dstPath, tmpFolder)
-        material.updateUsdMaterial(usdMaterial, surfaceShader, params.usdStage)
+            surfaceShader = material.getUsdSurfaceShader(usdMaterial, params.usdStage)
+            copyMaterialTextures(params, material, srcPath, dstPath, tmpFolder)
+            material.updateUsdMaterial(usdMaterial, surfaceShader, params.usdStage)
 
     usdStage.GetRootLayer().Export(tmpPath)
 
