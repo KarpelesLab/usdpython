@@ -29,6 +29,7 @@ mesh.CreateFaceVertexCountsAttr([4, 4, 4, 4, 4, 4])
 mesh.CreateFaceVertexIndicesAttr([0, 1, 3, 2, 2, 3, 5, 4, 4, 5, 7, 6, 6, 7, 1, 0, 1, 7, 5, 3, 6, 0, 2, 4])
 
 # create PBR material
+stage.DefinePrim('/' + assetName + '/Materials', 'Scope')
 material = UsdShade.Material.Define(stage, '/' + assetName + '/Materials/cubeMaterial')
 pbrShader = UsdShade.Shader.Define(stage, '/' + assetName + '/Materials/cubeMaterial/PBRShader')
 

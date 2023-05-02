@@ -8,11 +8,51 @@ import time
 import usdUtils
 
 
-__all__ = ['usdStageWithObj', 'makeValidUsdObjectName']
+__all__ = ['usdStageWithObj']
 
 
 INVALID_INDEX = -1
 LAST_ELEMENT = -1
+
+
+def convertObjIndexToUsd(strIndex, elementsCount):
+    if not strIndex:
+        return INVALID_INDEX
+    index = int(strIndex)
+    # OBJ indices starts from 1, USD indices starts from 0
+    if 0 < index and index <= elementsCount:
+        return index - 1
+    # OBJ indices can be negative as reverse indexing
+    if index < 0:
+        return elementsCount + index
+    return INVALID_INDEX
+
+
+def fixExponent(value):
+    # allow for scientific notation with X.Y(+/-)eZ
+    return float(value.lower().replace('+e', 'e+').replace('-e', 'e-'))
+
+
+def floatList(v):
+    try:
+        return map(float, v)
+    except ValueError:
+        return map(fixExponent, v)
+    except:
+        raise
+
+
+def linesContinuation(fileHandle):
+    for line in fileHandle:
+        line = line.rstrip('\n')
+        line = line.rstrip()
+        while line.endswith('\\'):
+            thisLine = line[:-1]
+            nextLine = next(fileHandle).rstrip('\n')
+            nextLine = nextLine.strip()
+            line = thisLine + ' ' + nextLine
+        yield line
+
 
 
 class Subset:
@@ -22,7 +62,7 @@ class Subset:
 
 
 class Group:
-    def __init__(self, name, materialIndex):
+    def __init__(self, materialIndex):
         self.subsets = []
         self.currentSubset = None
 
@@ -60,22 +100,11 @@ class Group:
         self.normalIndices.append(normalIndex)
 
 
-def fixExponent(value):
-    # allow for scientific notation with X.Y(+/-)eZ
-    return float(value.lower().replace('+e', 'e+').replace('-e', 'e-'))
 
-
-def floatList(v):
-    try:
-        return map(float, v)
-    except ValueError:
-        return map(fixExponent, v)
-    except:
-        raise
-
-
-class ObjData:
-    def __init__(self, verbose):
+class ObjConverter:
+    def __init__(self, objPath, usdPath, verbose):
+        self.usdPath = usdPath
+        self.verbose = verbose
         self.vertices = []
         self.colors = []
         self.uvs = []
@@ -88,8 +117,11 @@ class ObjData:
         self.materialIndicesByName = {}
         self.currentMaterial = INVALID_INDEX
         self.usdMaterials = []
-        self.verbose = verbose
+        self.usdDefaultMaterial = None
+        self.asset = None
         self.setGroup()
+
+        self.parseObjFile(objPath)
 
 
     def setMaterial(self, name):
@@ -98,7 +130,7 @@ class ObjData:
             print '  setting material:', materialName
         # find material
         self.currentMaterial = self.materialIndicesByName.get(materialName, INVALID_INDEX)
-        if self.currentMaterial < 0:
+        if self.currentMaterial == INVALID_INDEX:
             self.materials.append(materialName)
             self.currentMaterial = len(self.materials) - 1
             self.materialIndicesByName[materialName] = self.currentMaterial
@@ -113,7 +145,7 @@ class ObjData:
         if self.currentGroup == None:
             if self.verbose:
                 print '  creating group:', groupName
-            self.currentGroup = Group(groupName, self.currentMaterial)
+            self.currentGroup = Group(self.currentMaterial)
             self.groups[groupName] = self.currentGroup
         else:
             if self.verbose:
@@ -172,196 +204,161 @@ class ObjData:
     def checkLastSubsets(self):
         for groupName, group in self.groups.iteritems():
             if len(group.subsets) > 1 and len(group.subsets[LAST_ELEMENT].faces) == 0:
-                    del group.subsets[LAST_ELEMENT]
+                del group.subsets[LAST_ELEMENT]
 
 
-def makeValidUsdObjectName(path):
-    if len(path) > 0:
-        if path[0].isdigit():
-            path = '_' + path
-        path = path.replace(' ', '_')
-        path = path.replace('-', '_')
-        path = path.replace('.', '_')
-        path = path.replace(':', '_')
-        path = path.replace('[', '_')
-        path = path.replace(']', '_')
-        path = path.replace('(', '_')
-        path = path.replace(')', '_')
-        path = path.replace('/', '_')
-        path = path.replace('%', '_')
-        if Sdf.Path.IsValidIdentifier(path):
-            return path
-    return 'default'
-
-
-def convertObjIndexToUsd(strIndex, elementsCount):
-    if not strIndex:
-        return INVALID_INDEX
-    index = int(strIndex)
-    # OBJ indices starts from 1, USD indices starts from 0
-    if 0 < index and index <= elementsCount:
-        return index - 1
-    # OBJ indices can be negative as reverse indexing
-    if index < 0:
-        return elementsCount + index
-    return INVALID_INDEX
-
-
-def createMaterial(objData, materialsPath, name, stage):
-    materialName = makeValidUsdObjectName(name)
-    usdMaterial = UsdShade.Material.Define(stage, materialsPath + '/' + materialName)
-    objData.usdMaterials.append(usdMaterial)
-
-
-def createMesh(objData, geomPath, group, groupName, stage):
-    if len(group.faceVertexCounts) == 0:
-        return False
-
-    groupName = makeValidUsdObjectName(groupName)
-    if objData.verbose:
-        print '  creating USD mesh:', groupName, ('(subsets: ' + str(len(group.subsets)) + ')' if len(group.subsets) > 1 else '')
-    mesh = UsdGeom.Mesh.Define(stage, geomPath + '/' + groupName)
-    mesh.GetSubdivisionSchemeAttr().Set('none')
-
-    mesh.CreateFaceVertexCountsAttr(group.faceVertexCounts)
-
-    # vertices
-    minVertexIndex = min(group.vertexIndices)
-    maxVertexIndex = max(group.vertexIndices)
-
-    groupVertices = objData.vertices[minVertexIndex:maxVertexIndex+1]
-    mesh.CreatePointsAttr(groupVertices)
-    if minVertexIndex == 0: # optimization
-        mesh.CreateFaceVertexIndicesAttr(group.vertexIndices)
-    else:
-        mesh.CreateFaceVertexIndicesAttr(map(lambda x: x - minVertexIndex, group.vertexIndices))
-
-    extent = Gf.Range3f()
-    for pt in groupVertices:
-        extent.UnionWith(Gf.Vec3f(pt))
-    mesh.GetExtentAttr().Set([extent.GetMin(), extent.GetMax()])
-
-    # vertex colors
-    if len(objData.colors) == len(objData.vertices):
-        colorAttr = mesh.CreateDisplayColorPrimvar(UsdGeom.Tokens.vertex)
-        colorAttr.Set(objData.colors[minVertexIndex:maxVertexIndex+1])
-
-    # texture coordinates
-    minUvIndex = min(group.uvIndices)
-    maxUvIndex = max(group.uvIndices)
-
-    if minUvIndex >= 0:
-        if group.uvsHaveOwnIndices:
-            uvPrimvar = mesh.CreatePrimvar('st', Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.faceVarying)
-            uvPrimvar.Set(objData.uvs[minUvIndex:maxUvIndex+1])
-            if minUvIndex == 0:  # optimization
-                uvPrimvar.SetIndices(Vt.IntArray(group.uvIndices))
-            else:
-                uvPrimvar.SetIndices(Vt.IntArray(map(lambda x: x - minUvIndex, group.uvIndices)))
+    def getUsdMaterial(self, materialIndex):
+        if 0 <= materialIndex and materialIndex < len(self.usdMaterials):
+            return self.usdMaterials[materialIndex]
         else:
-            uvPrimvar = mesh.CreatePrimvar('st', Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex)
-            uvPrimvar.Set(objData.uvs[minUvIndex:maxUvIndex+1])
+            if self.usdDefaultMaterial is None:
+                material = usdUtils.Material("defaultMaterial")
+                self.usdDefaultMaterial = material.makeUsdMaterial(self.asset)
+            return self.usdDefaultMaterial                
 
-    # normals
-    minNormalIndex = min(group.normalIndices)
-    maxNormalIndex = max(group.normalIndices)
 
-    if minNormalIndex >= 0:
-        if group.normalsHaveOwnIndices:
-            normalPrimvar = mesh.CreatePrimvar('normals', Sdf.ValueTypeNames.Normal3fArray, UsdGeom.Tokens.faceVarying)
-            normalPrimvar.Set(objData.normals[minNormalIndex:maxNormalIndex+1])
-            if minNormalIndex == 0:  # optimization
-                normalPrimvar.SetIndices(Vt.IntArray(group.normalIndices))
-            else:
-                normalPrimvar.SetIndices(Vt.IntArray(map(lambda x: x - minNormalIndex, group.normalIndices)))
+    def createMesh(self, geomPath, group, groupName, usdStage):
+        if len(group.faceVertexCounts) == 0:
+            return False
+
+        groupName = usdUtils.makeValidIdentifier(groupName)
+        if self.verbose:
+            print '  creating USD mesh:', groupName, ('(subsets: ' + str(len(group.subsets)) + ')' if len(group.subsets) > 1 else '')
+        usdMesh = UsdGeom.Mesh.Define(usdStage, geomPath + '/' + groupName)
+        usdMesh.CreateSubdivisionSchemeAttr(UsdGeom.Tokens.none)
+
+        usdMesh.CreateFaceVertexCountsAttr(group.faceVertexCounts)
+
+        # vertices
+        minVertexIndex = min(group.vertexIndices)
+        maxVertexIndex = max(group.vertexIndices)
+
+        groupVertices = self.vertices[minVertexIndex:maxVertexIndex+1]
+        usdMesh.CreatePointsAttr(groupVertices)
+        if minVertexIndex == 0: # optimization
+            usdMesh.CreateFaceVertexIndicesAttr(group.vertexIndices)
         else:
-            mesh.CreateNormalsAttr(objData.normals[minNormalIndex:maxNormalIndex+1])
+            usdMesh.CreateFaceVertexIndicesAttr(map(lambda x: x - minVertexIndex, group.vertexIndices))
 
-    # materials
-    if len(group.subsets) == 1:
-        materialIndex = group.subsets[0].materialIndex
-        if 0 <= materialIndex and materialIndex < len(objData.usdMaterials):
-            if objData.verbose:
-                print '  material:', objData.materials[materialIndex]
-            UsdShade.MaterialBindingAPI(mesh).Bind(objData.usdMaterials[materialIndex])
-    else:
-        bindingAPI = UsdShade.MaterialBindingAPI(mesh)
-        for subset in group.subsets:
-            materialIndex = subset.materialIndex
-            if 0 <= materialIndex and materialIndex < len(objData.usdMaterials) and len(subset.faces) > 0:
-                materialName = makeValidUsdObjectName(objData.materials[materialIndex])
-                subsetName = materialName + 'Subset'
-                if objData.verbose:
-                    print '  subset:', subsetName, 'faces:', len(subset.faces)
-                usdSubset = UsdShade.MaterialBindingAPI.CreateMaterialBindSubset(bindingAPI, subsetName, Vt.IntArray(subset.faces))
-                UsdShade.MaterialBindingAPI(usdSubset).Bind(objData.usdMaterials[materialIndex])
+        extent = Gf.Range3f()
+        for pt in groupVertices:
+            extent.UnionWith(Gf.Vec3f(pt))
+        usdMesh.CreateExtentAttr([extent.GetMin(), extent.GetMax()])
+
+        # vertex colors
+        if len(self.colors) == len(self.vertices):
+            colorAttr = usdMesh.CreateDisplayColorPrimvar(UsdGeom.Tokens.vertex)
+            colorAttr.Set(self.colors[minVertexIndex:maxVertexIndex+1])
+
+        # texture coordinates
+        minUvIndex = min(group.uvIndices)
+        maxUvIndex = max(group.uvIndices)
+
+        if minUvIndex >= 0:
+            if group.uvsHaveOwnIndices:
+                uvPrimvar = usdMesh.CreatePrimvar('st', Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.faceVarying)
+                uvPrimvar.Set(self.uvs[minUvIndex:maxUvIndex+1])
+                if minUvIndex == 0:  # optimization
+                    uvPrimvar.SetIndices(Vt.IntArray(group.uvIndices))
+                else:
+                    uvPrimvar.SetIndices(Vt.IntArray(map(lambda x: x - minUvIndex, group.uvIndices)))
+            else:
+                uvPrimvar = usdMesh.CreatePrimvar('st', Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex)
+                uvPrimvar.Set(self.uvs[minUvIndex:maxUvIndex+1])
+
+        # normals
+        minNormalIndex = min(group.normalIndices)
+        maxNormalIndex = max(group.normalIndices)
+
+        if minNormalIndex >= 0:
+            if group.normalsHaveOwnIndices:
+                normalPrimvar = usdMesh.CreatePrimvar('normals', Sdf.ValueTypeNames.Normal3fArray, UsdGeom.Tokens.faceVarying)
+                normalPrimvar.Set(self.normals[minNormalIndex:maxNormalIndex+1])
+                if minNormalIndex == 0:  # optimization
+                    normalPrimvar.SetIndices(Vt.IntArray(group.normalIndices))
+                else:
+                    normalPrimvar.SetIndices(Vt.IntArray(map(lambda x: x - minNormalIndex, group.normalIndices)))
+            else:
+                normalPrimvar = usdMesh.CreatePrimvar('normals', Sdf.ValueTypeNames.Normal3fArray, UsdGeom.Tokens.vertex)
+                normalPrimvar.Set(self.normals[minNormalIndex:maxNormalIndex+1])
+
+        # materials
+        if len(group.subsets) == 1:
+            materialIndex = group.subsets[0].materialIndex
+            if self.verbose:
+                if 0 <= materialIndex and materialIndex < len(self.usdMaterials):
+                    print usdUtils.makeValidIdentifier(self.materials[materialIndex])
+                else:
+                    print 'defaultMaterial'
+            UsdShade.MaterialBindingAPI(usdMesh).Bind(self.getUsdMaterial(materialIndex))
+        else:
+            bindingAPI = UsdShade.MaterialBindingAPI(usdMesh)
+            for subset in group.subsets:
+                materialIndex = subset.materialIndex
+                if len(subset.faces) > 0:
+                    materialName = 'defaultMaterial'
+                    if 0 <= materialIndex and materialIndex < len(self.usdMaterials):
+                        materialName = usdUtils.makeValidIdentifier(self.materials[materialIndex])
+                    subsetName = materialName + 'Subset'
+                    if self.verbose:
+                        print '  subset:', subsetName, 'faces:', len(subset.faces)
+                    usdSubset = UsdShade.MaterialBindingAPI.CreateMaterialBindSubset(bindingAPI, subsetName, Vt.IntArray(subset.faces))
+                    UsdShade.MaterialBindingAPI(usdSubset).Bind(self.getUsdMaterial(materialIndex))
 
 
-def linesContinuation(fileHandle):
-    for line in fileHandle:
-        line = line.rstrip('\n')
-        line = line.rstrip()
-        while line.endswith('\\'):
-            thisLine = line[:-1]
-            nextLine = next(fileHandle).rstrip('\n')
-            nextLine = nextLine.strip()
-            line = thisLine + " "+ nextLine
+    def parseObjFile(self, objPath):
+        with open(objPath) as file:
+            for line in linesContinuation(file):
+                line = line.strip()
+                if not line or '#' == line[0]:
+                    continue
 
-        yield line
+                arguments = filter(None, line.split(' '))
+                command = arguments[0]
+                arguments = arguments[1:]
+                
+                if 'v' == command:
+                    self.addVertex(arguments)
+                elif 'vt' == command:
+                    self.addUV(arguments)
+                elif 'vn' == command:
+                    self.addNormal(arguments)
+                elif 'f' == command:
+                    self.addFace(arguments)
+                elif 'g' == command or 'o' == command:
+                    self.setGroup(' '.join(arguments))
+                elif 'usemtl' == command:
+                    self.setMaterial(' '.join(arguments))
+
+        self.checkLastSubsets()
 
 
-def parseObjFile(objPath, verbose):
-    objData = ObjData(verbose)
-    with open(objPath) as file:
-        for line in linesContinuation(file):
-            line = line.strip()
-            if not line or '#' == line[0]:
-                continue
+    def makeUsdStage(self):
+        self.asset = usdUtils.Asset(self.usdPath)
+        usdStage = self.asset.makeUsdStage()
 
-            arguments = filter(None, line.split(' '))
-            command = arguments[0]
-            arguments = arguments[1:]
-            
-            if 'v' == command:
-                objData.addVertex(arguments)
-            elif 'vt' == command:
-                objData.addUV(arguments)
-            elif 'vn' == command:
-                objData.addNormal(arguments)
-            elif 'f' == command:
-                objData.addFace(arguments)
-            elif 'g' == command or 'o' == command:
-                objData.setGroup(' '.join(arguments))
-            elif 'usemtl' == command:
-                objData.setMaterial(' '.join(arguments))
+        # create all materials
+        for matName in self.materials:
+            material = usdUtils.Material(matName)
+            usdMaterial = material.makeUsdMaterial(self.asset)
+            self.usdMaterials.append(usdMaterial)
 
-    objData.checkLastSubsets()
+        if len(self.vertices) == 0:
+            return usdStage
 
-    return objData
+        # create all meshes
+        geomPath = self.asset.getGeomPath()
+        for groupName, group in self.groups.iteritems():
+            self.createMesh(geomPath, group, groupName, usdStage)
+
+        return usdStage
+
 
 
 def usdStageWithObj(objPath, usdPath, legacyModifier, verbose=0):
     start = time.time()
-    objData = parseObjFile(objPath, verbose)
-    if verbose:
-        print '  parsing OBJ file:', time.time() - start, 'sec'
-
-    asset = usdUtils.Asset(usdPath, legacyModifier)
-    usdStage = asset.makeUsdStage()
-
-    # create all materials
-    materialsPath = asset.getMaterialsPath()
-    for material in objData.materials:
-        createMaterial(objData, materialsPath, material, usdStage)
-
-    if len(objData.vertices) == 0:
-        return usdStage
-
-    # create all meshes
-    geomPath = asset.getGeomPath()
-    for groupName, group in objData.groups.iteritems():
-        createMesh(objData, geomPath, group, groupName, usdStage)
+    converter = ObjConverter(objPath, usdPath, verbose)
+    usdStage = converter.makeUsdStage()
     if verbose:
         print '  creating stage from obj file:', time.time() - start, 'sec'
-
     return usdStage

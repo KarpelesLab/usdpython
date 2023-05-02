@@ -5,14 +5,14 @@
 from pxr import *
 
 assetName = 'texturedMaterial'
-stage = Usd.Stage.CreateNew('assets/'+assetName+'.usdc')
+stage = Usd.Stage.CreateNew('assets/'+assetName+'.usd')
 
 UsdGeom.SetStageUpAxis(stage, 'Y')
 # create rootPrim, define asset metadata and set as defaultPrim
 rootPrim = stage.DefinePrim('/' + assetName, 'Xform')
 Usd.ModelAPI(rootPrim).SetKind('component')
 rootPrim.SetAssetInfoByKey('name', assetName)
-rootPrim.SetAssetInfoByKey('identifier', Sdf.AssetPath(assetName + ".usdc")) 
+rootPrim.SetAssetInfoByKey('identifier', Sdf.AssetPath(assetName + ".usd")) 
 stage.SetDefaultPrim(rootPrim)
 
 # create mesh with texture coordinates
@@ -32,6 +32,7 @@ texCoords.Set([(0.375, 0), (0.625, 0), (0.625, 0.25), (0.375, 0.25), (0.625, 0.5
 texCoords.SetIndices(Vt.IntArray([0, 1, 2, 3, 3, 2, 4, 5, 5, 4, 6, 7, 7, 6, 8, 9, 1, 10, 11, 2, 12, 0, 3, 13]))
 
 # create PBR material
+stage.DefinePrim('/' + assetName + '/Materials', 'Scope')
 material = UsdShade.Material.Define(stage, '/' + assetName + '/Materials/cubeMaterial')
 pbrShader = UsdShade.Shader.Define(stage, '/' + assetName + '/Materials/cubeMaterial/PBRShader')
 
@@ -61,4 +62,4 @@ print(stage.GetRootLayer().ExportToString())
 stage.Save()
 
 # construct .usdz archive from the .usdc file
-UsdUtils.CreateNewARKitUsdzPackage('assets/'+assetName+'.usdc', 'assets/'+assetName+'.usdz')
+UsdUtils.CreateNewARKitUsdzPackage('assets/'+assetName+'.usd', 'assets/'+assetName+'.usdz')

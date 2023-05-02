@@ -4,7 +4,7 @@
 
 from pxr import *
 
-assetName = 'tansformAnimation'
+assetName = 'transformAnimation'
 stage = Usd.Stage.CreateNew('assets/'+assetName+'.usd')
 
 UsdGeom.SetStageUpAxis(stage, 'Y')

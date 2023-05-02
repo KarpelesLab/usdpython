@@ -5,6 +5,7 @@ import sys
 import importlib, imp
 import tempfile
 from shutil import rmtree
+import zipfile
 
 usdLibLoaded = True
 kConvertErrorReturnValue = 2
@@ -20,7 +21,7 @@ __all__ = ['convert']
 
 
 class USDParameters:
-    version = 0.61
+    version = 0.62
     materialsPath = '/Materials'
 
     def __init__(self, usdStage, verbose, url, copyright, assetPath):
@@ -32,7 +33,7 @@ class USDParameters:
         self.usdMaterialsByName = {} # store materials by name
         self.defaultMaterial = None
         self.assetName = ''
-        self.asset = usdUtils.Asset(assetPath, None, usdStage)
+        self.asset = usdUtils.Asset(assetPath, usdStage)
 
 
 
@@ -48,6 +49,8 @@ class ParserOut:
         self.url = ''
         self.copyright = ''
         self.metersPerUnit = 0
+        self.loop = False
+        self.noloop = False
         material = usdUtils.Material('')
         self.materials.append(material)
 
@@ -74,6 +77,8 @@ class Parser:
                    [-copyright copyright]\n\
                    [-copytextures]\n\
                    [-metersPerUnit value]\n\
+                   [-loop]\n\
+                   [-no-loop]\n\
                    [-iOS12]\n\
                    [-m materialName]        [-texCoordSet name]\n\
                    [-diffuseColor           r,g,b]\n\
@@ -101,7 +106,7 @@ class Parser:
         print '\n\
 Converts 3D model file to usd/usda/usdc/usdz.\n\
 \npositional argument:\n\
-  inputFile             Input file: OBJ/glTF/FBX files.\n\
+  inputFile             Input file: OBJ/glTF(.gltf/glb)/FBX/Alembic(.abc)/USD(.usd/usda/usdc/usdz) files.\n\
 \noptional arguments:\n\
   outputFile            Output .usd/usda/usdc/usdz files.\n\
   -h, --help            Show this help message and exit.\n\
@@ -112,6 +117,8 @@ Converts 3D model file to usd/usda/usdc/usdz.\n\
                         Add copyright metadata\n\
   -copytextures         Copy texture files (for .usd/usda/usdc) workflows\n\
   -metersPerUnit value  Set metersPerUnit attribute with float value\n\
+  -loop                 Set animation loop flag to 1\n\
+  -no-loop              Set animation loop flag to 0\n\
   -m materialName       Subsequent material arguments apply to this material.\n\
                         If no material is present in input file, a material of\n\
                         this name will be generated.\n\
@@ -328,7 +335,7 @@ examples:\n\
                     self.out.verbose = True
                 elif '-copytextures' == argument:
                     self.out.copyTextures = True
-                elif '-iOS12' == argument:
+                elif '-iOS12' == argument or '-ios12' == argument:
                     self.out.iOS12 = True
                 elif '-copyright' == argument:
                     self.out.copyright = self.getParameters(1, argument)
@@ -348,6 +355,10 @@ examples:\n\
                     self.texCoordSet = 'st' # drop to default
                 elif '-texCoordSet' == argument:
                     self.texCoordSet = self.getParameters(1, argument)
+                elif '-loop' == argument or '--loop' == argument:
+                    self.out.loop = True
+                elif '-no-loop' == argument or '--no-loop' == argument:
+                    self.out.noloop = True
                 elif '-h' == argument or '--help' == argument:
                     self.printHelpAndExit()
                 elif '-f' == argument:
@@ -371,6 +382,9 @@ examples:\n\
 
         if self.out.inFilePath == '':
             self.printErrorUsageAndExit('too few arguments')
+
+        if self.out.loop and self.out.noloop:
+            self.printErrorUsageAndExit("can't use -loop and -no-loop flags together")
 
         return self.out
 
@@ -564,6 +578,16 @@ def createStageMetadata(params):
         params.usdStage.SetMetadataByDictKey("customLayerData", "copyright", str(params.copyright))
 
 
+def unzip(filePath, outputDir):
+    firstFile = ''
+    with zipfile.ZipFile(filePath) as zf:
+        zf.extractall(outputDir)
+        namelist = zf.namelist()
+        if len(namelist) > 0:
+            firstFile = namelist[0]
+    return firstFile
+
+
 def process(argumentList):
     parser = Parser()
     parserOut = parser.parse(argumentList)
@@ -621,12 +645,21 @@ def process(argumentList):
     tmpPath = dstFileAndExt[0] + '.usdc' if dstIsUsdz else dstPath
     tmpBasename = os.path.basename(tmpPath)
     tmpPath = tmpFolder + '/' + tmpBasename
+    removeTmpPath = False
+    if '.usd' == srcExt or '.usda' == srcExt or '.usdc' == srcExt:
+        # create .usdc file in source file folder
+        srcFolder =  os.path.dirname(srcPath)
+        tmpPath = srcFolder + '/' +  tmpBasename
+        if os.path.isfile(tmpPath):
+            tmpPath = srcFolder + '/' +  next(tempfile._get_candidate_names()) + tmpBasename
+        removeTmpPath = True
 
     if parserOut.verbose and parserOut.copyTextures and dstIsUsdz:
         usdUtils.printWarning('argument -copytextures works for .usda and .usdc output files only.')
 
     copyTextures = parserOut.copyTextures and not dstIsUsdz
     srcIsUsd = False;
+    srcIsUsdz = False;
     usdStage = None
     if '.obj' == srcExt:
         global usdStageWithObj_module
@@ -644,6 +677,12 @@ def process(argumentList):
     elif '.usd' == srcExt or '.usda' == srcExt or '.usdc' == srcExt:
         usdStage = Usd.Stage.Open(srcPath)
         srcIsUsd = True;
+    elif '.usdz' == srcExt:
+        tmpUSDC = unzip(srcPath, tmpFolder)
+        if tmpUSDC == '':
+            parser.printErrorUsageAndExit("can't open input usdz file " + parserOut.inFilePath)
+        usdStage = Usd.Stage.Open(tmpFolder + '/' + tmpUSDC)
+        srcIsUsdz = True;
     elif '.abc' == srcExt:
         usdStage = Usd.Stage.Open(srcPath)
         # To update Alembic USD Stage, first save it to temporary .usdc and reload it
@@ -665,6 +704,12 @@ def process(argumentList):
     if parserOut.metersPerUnit != 0 and legacyModifier is None:
         usdStage.SetMetadata("metersPerUnit", parserOut.metersPerUnit)
 
+    if parserOut.loop and (srcIsUsd or srcIsUsdz):
+        usdStage.SetMetadataByDictKey("customLayerData", "loopStartToEndTimeCode", True)
+
+    if parserOut.noloop:
+        usdStage.SetMetadataByDictKey("customLayerData", "loopStartToEndTimeCode", False)
+
     rootPrim = None
     if usdStage.HasDefaultPrim():
         rootPrim = usdStage.GetDefaultPrim()
@@ -672,6 +717,13 @@ def process(argumentList):
     if rootPrim != None:
         params.assetName = rootPrim.GetName()
         params.materialsPath = '/' + params.assetName + '/Materials'
+
+        if legacyModifier is not None and legacyModifier.getMetersPerUnit() != 0:
+            usdMetersPerUnit = 0.01
+            scale = legacyModifier.getMetersPerUnit() / usdMetersPerUnit
+            if scale != 1:
+                rootXform = UsdGeom.Xform(rootPrim)
+                rootXform.AddScaleOp(UsdGeom.XformOp.PrecisionFloat, "metersPerUnit").Set(Gf.Vec3f(scale, scale, scale))
 
     getAllUsdMaterials(params, params.usdStage.GetPseudoRoot())
 
@@ -736,13 +788,16 @@ def process(argumentList):
 
     if dstIsUsdz:
         # construct .usdz archive from the .usdc file
-        UsdUtils.CreateNewARKitUsdzPackage(tmpPath, dstPath)
+        UsdUtils.CreateNewARKitUsdzPackage(Sdf.AssetPath(tmpPath), dstPath)
     else:
         usdUtils.copy(tmpPath, dstPath)
 
     # copy textures with usda and usdc
     if copyTextures:
         copyTexturesFromStageToFolder(params, tmpPath, dstFolder)
+
+    if removeTmpPath:
+        os.remove(tmpPath)
 
     rmtree(tmpFolder, ignore_errors=True)
     print 'Output file:', dstPath
@@ -772,7 +827,7 @@ def tryProcess(argumentList):
 
 
 def convert(fileList, optionDictionary):
-    supportedFormats = ['.obj', '.gltf', '.fbx', '.usd', '.usda', '.usdc', '.usdz', '.abc'];
+    supportedFormats = ['.obj', '.gltf', '.glb', '.fbx', '.usd', '.usda', '.usdc', '.usdz', '.abc'];
     argumentList = []
 
     for file in fileList:
@@ -802,7 +857,6 @@ def convert(fileList, optionDictionary):
                             argumentList.append(channel)
                         argumentList.append(file)
 
-    # argumentList.append('-a')
     return tryProcess(argumentList)
 
 

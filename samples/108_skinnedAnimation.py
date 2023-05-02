@@ -42,8 +42,8 @@ skinBinding.CreateJointIndicesPrimvar(False, 4).Set([2,0,0,0, 2,0,0,0, 1,0,0,0, 
 skinBinding.CreateJointWeightsPrimvar(False, 4).Set([0.57,0.57,0,0, 0.57,0.57,0,0, 0.57,0.57,0,0, 0.57,0.57,0,0, 0.57,0.57,0,0, 0.57,0.57,0,0, 0.57,0.57,0,0, 0.57,0.57,0,0])
 
 skinBinding.CreateGeomBindTransformAttr(Gf.Matrix4d(((1,0,0,0),(0,1,0,0),(0,0,1,0),(0,0,0,1))))
-skinBinding.CreateSkeletonRel().AddTarget('/' + assetName + '/cubeModel/SkeletonRoot')
-skinBinding.CreateAnimationSourceRel().AddTarget('/' + assetName + '/cubeModel/animation')
+skinBinding.CreateSkeletonRel().SetTargets(['/' + assetName + '/cubeModel/SkeletonRoot'])
+skinBinding.CreateAnimationSourceRel().SetTargets(['/' + assetName + '/cubeModel/animation'])
 
 
 # create skeleton

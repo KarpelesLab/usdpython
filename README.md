@@ -13,7 +13,7 @@ The easiest way to start using these command-line tools is to double-click `USD.
 For more details, including demos, see the WWDC 2019 session "Working with USD": 
 https://developer.apple.com/videos/play/wwdc2019/602/
 
-## usdzconvert (version 0.61)
+## usdzconvert (version 0.62)
 
 `usdzconvert` is a Python script that converts obj, gltf, fbx, abc, and usda/usdc/usd assets to usdz.
 It also performs asset validation on the generated usdz.

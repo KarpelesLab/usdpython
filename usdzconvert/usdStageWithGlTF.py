@@ -254,6 +254,8 @@ class glTFNodeManager(usdUtils.NodeManager):
 
     def overrideGetName(self, strNodeIdx):
         # TODO: make sure there is no duplicate names
+        if strNodeIdx is None:
+            return ''
         nodeIdx = int(strNodeIdx)
         gltfNode = self.converter.gltf['nodes'][nodeIdx]
         return getName(gltfNode, 'node_', nodeIdx)
@@ -261,6 +263,11 @@ class glTFNodeManager(usdUtils.NodeManager):
 
     def overrideGetChildren(self, strNodeIdx):
         children = []
+        if strNodeIdx is None:
+            for i in range(len(self.converter.gltf['nodes'])):
+                if self.overrideGetParent(str(i)) is None:
+                    children.append(str(i))
+            return children
         gltfNode = self.converter.gltf['nodes'][int(strNodeIdx)]
         if 'children' in gltfNode:
             for child in gltfNode['children']:
@@ -269,11 +276,15 @@ class glTFNodeManager(usdUtils.NodeManager):
 
 
     def overrideGetLocalTransformGfMatrix4d(self, strNodeIdx):
+        if strNodeIdx is None:
+            return Gf.Matrix4d(1)
         gltfNode = self.converter.gltf['nodes'][int(strNodeIdx)]
         return getMatrixTransform(gltfNode)
 
 
     def overrideGetWorldTransformGfMatrix4d(self, strNodeIdx):
+        if strNodeIdx is None:
+            return Gf.Matrix4d(1)
         return self.converter.getWorldTransform(int(strNodeIdx))
 
 
@@ -343,7 +354,7 @@ class glTFConverter:
 
         if self.legacyModifier is not None and self.legacyModifier.getMetersPerUnit() == 0:
             self.legacyModifier.setMetersPerUnit(1)
-        self.asset = usdUtils.Asset(usdPath, legacyModifier)
+        self.asset = usdUtils.Asset(usdPath)
 
         try:
             self.load(gltfPath)
@@ -543,9 +554,16 @@ class glTFConverter:
             matName = getName(gltfMaterial, 'material_', len(self.usdMaterials))
             material = usdUtils.Material(matName)
 
-            isBlend = False
+            isBlendOrMask = False
             if 'alphaMode' in gltfMaterial and gltfMaterial['alphaMode'] == 'BLEND':
-                isBlend = True
+                isBlendOrMask = True
+
+            if 'alphaMode' in gltfMaterial and gltfMaterial['alphaMode'] == 'MASK':
+                isBlendOrMask = True
+                if 'alphaCutoff' in gltfMaterial:
+                    material.opacityThreshold = float(gltfMaterial['alphaCutoff'])
+                else:
+                    material.opacityThreshold = 0.5 # default by glTF spec
 
             pbr = None
             if 'pbrMetallicRoughness' in gltfMaterial:
@@ -556,7 +574,7 @@ class glTFConverter:
                 baseColorScale = [baseColorFactor[0], baseColorFactor[1], baseColorFactor[2]]
                 opacityScale = baseColorFactor[3]
                 if self.processTexture(pbr, 'baseColorTexture', usdUtils.InputName.diffuseColor, 'rgb', material, baseColorScale):
-                    if isBlend:
+                    if isBlendOrMask:
                         map = material.inputs[usdUtils.InputName.diffuseColor]
                         if self.textureHasAlpha(map.file):
                             self.processTexture(pbr, 'baseColorTexture', usdUtils.InputName.opacity, 'a', material, opacityScale)
@@ -564,7 +582,7 @@ class glTFConverter:
                             material.inputs[usdUtils.InputName.opacity] = baseColorFactor[3]
                 else:
                     material.inputs[usdUtils.InputName.diffuseColor] = baseColorFactor
-                    if isBlend:
+                    if isBlendOrMask:
                         material.inputs[usdUtils.InputName.opacity] = baseColorFactor[3]
                 
                 # metallic and roughness
@@ -588,7 +606,7 @@ class glTFConverter:
                     diffuseScale = [diffuseFactor[0], diffuseFactor[1], diffuseFactor[2]]
                     opacityScale = diffuseFactor[3]
                 if self.processTexture(pbrSG, 'diffuseTexture', usdUtils.InputName.diffuseColor, 'rgb', material, diffuseScale):
-                    if isBlend:
+                    if isBlendOrMask:
                         map = material.inputs[usdUtils.InputName.diffuseColor]
                         if self.textureHasAlpha(map.file):
                             self.processTexture(pbrSG, 'diffuseTexture', usdUtils.InputName.opacity, 'a', material, opacityScale)
@@ -597,7 +615,7 @@ class glTFConverter:
                 else:
                     if diffuseScale:
                         material.inputs[usdUtils.InputName.diffuseColor] = diffuseScale
-                    if isBlend and opacityScale:
+                    if isBlendOrMask and opacityScale:
                         material.inputs[usdUtils.InputName.opacity] = opacityScale
 
             self.processTexture(gltfMaterial, 'normalTexture', usdUtils.InputName.normal, 'rgb', material)
@@ -649,11 +667,16 @@ class glTFConverter:
         self.skinning.createSkeletonsFromSkins()
         if self.verbose:
             print "  Found skeletons:", len(self.skinning.skeletons), "with", len(self.skinning.skins), "skin(s)"
+        for skeleton in self.skinning.skeletons:
+            if skeleton.getRoot() is None:
+                skeleton.makeUsdSkeleton(self.usdStage, self.asset.getGeomPath() + '/RootNodeSkel', self.nodeManager)
 
 
     def findSkeletonForAnimation(self, gltfAnim):
         for gltfChannel in gltfAnim['channels']:
             gltfTarget = gltfChannel['target']
+            if 'node' not in gltfTarget:
+                continue
             nodeIdx = gltfTarget['node']
             skeleton = self.skinning.findSkeletonByJoint(str(nodeIdx))
             if skeleton is not None:
@@ -810,7 +833,7 @@ class glTFConverter:
                 if joint in animJoints:
                     jointPaths.append(skeleton.jointPaths[joint])
 
-            usdSkelAnim.CreateJointsAttr().Set(jointPaths)
+            usdSkelAnim.CreateJointsAttr(jointPaths)
 
             gltfNodes = self.gltf['nodes']
 
@@ -915,6 +938,12 @@ class glTFConverter:
             if self.legacyModifier is not None:
                 self.legacyModifier.addSkelAnimToMesh(usdMesh, skeleton)
 
+        if 'extensions' in gltfPrimitive:
+            extensions = gltfPrimitive['extensions']
+            if 'KHR_draco_mesh_compression' in extensions:
+                usdUtils.printError("draco compression is not supported.")
+                raise usdUtils.ConvertError()
+
         attributes = gltfPrimitive['attributes']
 
         count = 0 # for geometry without indices
@@ -925,8 +954,8 @@ class glTFConverter:
                 usdMesh.CreatePointsAttr(accessor.data)
                 count = accessor.count
             elif key == 'NORMAL':
-                usdMesh.CreateNormalsAttr(accessor.data)
-                usdMesh.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
+                normalPrimvar = usdMesh.CreatePrimvar('normals', Sdf.ValueTypeNames.Normal3fArray, UsdGeom.Tokens.vertex)
+                normalPrimvar.Set(accessor.data)
             elif key == 'TANGENT':
                 pass
             elif key[0:8] == 'TEXCOORD':
@@ -1004,7 +1033,7 @@ class glTFConverter:
             faceVertexCounts = [3] * numFaceVertexCounts
             usdMesh.CreateFaceVertexCountsAttr(faceVertexCounts) # per-face vertex indices
 
-            usdMesh.CreateSubdivisionSchemeAttr().Set(UsdGeom.Tokens.none)
+            usdMesh.CreateSubdivisionSchemeAttr(UsdGeom.Tokens.none)
 
         # bind material to mesh
         if 'material' in gltfPrimitive:
@@ -1013,8 +1042,7 @@ class glTFConverter:
 
             gltfMaterial = self.gltf['materials'][materialIdx]
             if 'doubleSided' in gltfMaterial and gltfMaterial['doubleSided'] == True:
-                doubleSidedAttr = usdMesh.CreateDoubleSidedAttr()
-                doubleSidedAttr.Set(True)
+                usdMesh.CreateDoubleSidedAttr(True)
 
         return usdMesh
 
@@ -1114,6 +1142,8 @@ class glTFConverter:
         for gltfAnim in self.gltf['animations'] if 'animations' in self.gltf else []:
             for gltfChannel in gltfAnim['channels']:
                 gltfTarget = gltfChannel['target']
+                if 'node' not in gltfTarget:
+                    continue
                 nodeIdx = gltfTarget['node']
 
                 skeleton = self.skinning.findSkeletonByJoint(str(nodeIdx))
@@ -1190,8 +1220,8 @@ class glTFConverter:
         if self._loadFailed:
             return None
         self.usdStage = self.asset.makeUsdStage()
-        #gltf units for all linear distance are meters
         if self.legacyModifier is None:
+            # gltf units for all linear distance are meters
             self.usdStage.SetMetadata("metersPerUnit", 1)
         self.createMaterials()
         self.prepareSkinning()

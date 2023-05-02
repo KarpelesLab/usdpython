@@ -33,6 +33,7 @@ textureCoordinates.Set([(0.375, 0), (0.625, 0), (0.625, 0.25), (0.375, 0.25), (0
 textureCoordinates.SetIndices(Vt.IntArray([0, 1, 2, 3, 3, 2, 4, 5, 5, 4, 6, 7, 7, 6, 8, 9, 1, 10, 11, 2, 12, 0, 3, 13]))
 
 # create PBR material
+stage.DefinePrim('/' + assetName + '/Materials', 'Scope')
 material = UsdShade.Material.Define(stage, '/' + assetName + '/Materials/cubeMaterial')
 texCoordInput = material.CreateInput('frame:stPrimvarName', Sdf.ValueTypeNames.Token)
 texCoordInput.Set('st')

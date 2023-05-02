@@ -30,7 +30,7 @@ mesh.CreateFaceVertexIndicesAttr([0, 1, 3, 2, 2, 3, 5, 4, 4, 5, 7, 6, 6, 7, 1, 0
 
 # create mesh group with rose material
 roseMeshGroup = UsdShade.MaterialBindingAPI.CreateMaterialBindSubset(UsdShade.MaterialBindingAPI(mesh.GetPrim()), 'roseMeshGroup', Vt.IntArray([0,2,4,5]))
-
+stage.DefinePrim('/' + assetName + '/Materials', 'Scope')
 roseMaterial = UsdShade.Material.Define(stage, '/' + assetName + '/Materials/cubeMaterialRose')
 rosePBRShader = UsdShade.Shader.Define(stage, '/' + assetName + '/Materials/cubeMaterialRose/PBRShader')
 

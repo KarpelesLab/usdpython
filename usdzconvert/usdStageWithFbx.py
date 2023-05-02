@@ -82,7 +82,7 @@ class FbxConverter:
         self.verbose = verbose
         self.legacyModifier = legacyModifier
         self.copyTextures = copyTextures
-        self.asset = usdUtils.Asset(usdPath, legacyModifier)
+        self.asset = usdUtils.Asset(usdPath)
         self.usdStage = None
         self.usdMaterials = {}
         self.nodeId = 0
@@ -265,8 +265,8 @@ class FbxConverter:
         for point in points:
             extent.UnionWith(point)
 
-        usdMesh.CreatePointsAttr().Set(points)
-        usdMesh.GetExtentAttr().Set([Gf.Vec3f(extent.GetMin()), Gf.Vec3f(extent.GetMax())])
+        usdMesh.CreatePointsAttr(points)
+        usdMesh.CreateExtentAttr([Gf.Vec3f(extent.GetMin()), Gf.Vec3f(extent.GetMax())])
 
         if not any(self.extent):
             self.extent[0] = extent.GetMin()
@@ -531,7 +531,7 @@ class FbxConverter:
         if fbx.FbxNodeAttribute.eSubDiv == fbxMesh.GetAttributeType():
             fbxMesh = fbxMesh.GetBaseMesh()
         else:
-            usdMesh.GetSubdivisionSchemeAttr().Set(UsdGeom.Tokens.none)
+            usdMesh.CreateSubdivisionSchemeAttr(UsdGeom.Tokens.none)
 
         indices = []
         faceVertexCounts = []
@@ -541,8 +541,8 @@ class FbxConverter:
             for polygonVertexIdx in xrange(polygonSize):
                 index = fbxMesh.GetPolygonVertex(polygonIdx, polygonVertexIdx)
                 indices.append(index)
-        usdMesh.GetFaceVertexCountsAttr().Set(faceVertexCounts)
-        usdMesh.GetFaceVertexIndicesAttr().Set(indices)
+        usdMesh.CreateFaceVertexCountsAttr(faceVertexCounts)
+        usdMesh.CreateFaceVertexIndicesAttr(indices)
 
         # positions, normals, texture coordinates
         self.processControlPoints(fbxMesh, usdMesh)
@@ -744,7 +744,7 @@ class FbxConverter:
             rotateAttr.Set(rotations, Usd.TimeCode(frame + startFrame))
             scaleAttr.Set(scales, Usd.TimeCode(frame + startFrame))
 
-        usdSkelAnim.CreateJointsAttr().Set(jointPaths)
+        usdSkelAnim.CreateJointsAttr(jointPaths)
         skeleton.setSkeletalAnimation(usdSkelAnim)
 
 
@@ -972,6 +972,15 @@ class FbxConverter:
             if self.verbose:
                 print("  converting to Y-up, odd-forward, and right-handed axis system")
             axisSystem.ConvertScene(self.fbxScene)
+
+        systemUnit = self.fbxScene.GetGlobalSettings().GetSystemUnit()
+        if systemUnit != fbx.FbxSystemUnit.cm: # cm is default for USD and FBX
+            fbxMetersPerUnit = 0.01
+            metersPerUnit = systemUnit.GetScaleFactor() * fbxMetersPerUnit
+            if self.legacyModifier is not None and self.legacyModifier.getMetersPerUnit() == 0:
+                self.legacyModifier.setMetersPerUnit(metersPerUnit)
+            else:
+                self.usdStage.SetMetadata("metersPerUnit", metersPerUnit)
 
         self.processMaterials()
         self.processSkinning()

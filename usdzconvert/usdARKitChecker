@@ -5,47 +5,59 @@ from pxr import *
 from validateMesh import validateMesh
 from validateMaterial import validateMaterial
 
-def validateFile(file, verbose):
-	stage = Usd.Stage.Open(file)
-	success = True
-	predicate = Usd.TraverseInstanceProxies(Usd.PrimIsActive & Usd.PrimIsDefined & ~Usd.PrimIsAbstract)
-	for prim in stage.Traverse(predicate):
-		if prim.GetTypeName() == "Mesh":
-			success = validateMesh(prim, verbose) and success
-		if prim.GetTypeName() == "Material":
-			success = validateMaterial(prim, verbose) and success
-	return success
+def validateFile(file, verbose, errorData):
+    stage = Usd.Stage.Open(file)
+    success = True
+    predicate = Usd.TraverseInstanceProxies(Usd.PrimIsActive & Usd.PrimIsDefined & ~Usd.PrimIsAbstract)
+    for prim in stage.Traverse(predicate):
+        if prim.GetTypeName() == "Mesh":
+            success = validateMesh(prim, verbose, errorData) and success
+        if prim.GetTypeName() == "Material":
+            success = validateMaterial(prim, verbose, errorData) and success
+    return success
 
-def main(argumentList):
-	parser = argparse.ArgumentParser()
-	parser.add_argument("--verbose", "-v", action='store_true', help="Verbose mode.")
-	parser.add_argument('files',nargs='*')
-	args=parser.parse_args(argumentList)
+def runValidators(filename, verboseOutput, errorData):
+    checker = UsdUtils.ComplianceChecker(arkit=True, 
+            skipARKitRootLayerCheck=False, rootPackageOnly=False, 
+            skipVariants=False, verbose=False)
 
-	verboseOutput = args.verbose
-	totalSuccess = True
-	for filename in args.files:
+    checker.CheckCompliance(filename)
+    errors = checker.GetErrors()
+    failedChecks = checker.GetFailedChecks()
+    for rule in checker._rules:
+        error = rule.__class__.__name__
+        failures = rule.GetFailedChecks()
+        if len(failures) > 0:
+            errorData.append({ "code": "PXR_" + error })
+            errors.append(error)
 
-		usdcheckerArgs = ["usdchecker", "--arkit", filename]
-		if verboseOutput:
-			print "Checking file", filename
-			print "Running usdchecker"
-			usdCheckerResult = (subprocess.call(usdcheckerArgs,) == 0)
-		else:
-			FNULL = open(os.devnull, 'w')
-			usdCheckerResult = (subprocess.call(usdcheckerArgs,stdout=FNULL,stderr=FNULL) == 0)
+    usdCheckerResult = len(errors) == 0
+    mdlValidation = validateFile(filename, verboseOutput, errorData)
 
-		success = usdCheckerResult and validateFile(filename, verboseOutput)
+    success = usdCheckerResult and mdlValidation
+    if verboseOutput:
+        print
+    print "usdARKitChecker:", ("[Pass]" if success else "[Fail]"), filename
 
-		totalSuccess = success and totalSuccess
-		if verboseOutput:
-			print
-		print "usdARKitChecker:", ("[Pass]" if success else "[Fail]"), filename
+def main(argumentList, outErrorList=None):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--verbose", "-v", action='store_true', help="Verbose mode.")
+    parser.add_argument('files', nargs='*')
+    args=parser.parse_args(argumentList)
 
-	if totalSuccess:
-		return 0
-	else:
-		return 1
+    verboseOutput = args.verbose
+    totalSuccess = True
+    for filename in args.files:
+        errorData = []
+        runValidators(filename, verboseOutput, errorData)
+        if outErrorList is not None:
+        	outErrorList.append({ "file": filename, "errors": errorData })
+        totalSuccess = totalSuccess and len(errorData) == 0
+
+    if totalSuccess:
+        return 0
+    else:
+        return 1
 
 if __name__ == '__main__':
 	argumentList = sys.argv[1:]

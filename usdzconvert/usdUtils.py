@@ -90,12 +90,11 @@ class Asset:
     geomFolder = 'Geom'
     animationsFolder = 'Animations'
 
-    def __init__(self, usdPath, legacyModifier, usdStage=None):
+    def __init__(self, usdPath, usdStage=None):
         fileName = os.path.basename(usdPath)
         self.name = fileName[:fileName.find('.')]
         self.name = makeValidIdentifier(self.name)
         self.usdPath = usdPath
-        self.legacyModifier = legacyModifier
         self.usdStage = usdStage
         self.defaultPrim = None
         self.beginTime = float('inf')
@@ -125,14 +124,6 @@ class Asset:
         if not self._geomPath:
             self._geomPath = self.getPath() + '/' + Asset.geomFolder
             self.usdStage.DefinePrim(self._geomPath, 'Scope')
-
-            if self.legacyModifier is not None and self.legacyModifier.getMetersPerUnit() != 0:
-                self._geomPath += '/metersPerUnit'
-                usdGeom = UsdGeom.Xform.Define(self.usdStage, self._geomPath)
-                usdMetersPerUnit = 0.01
-                scale = self.legacyModifier.getMetersPerUnit() / usdMetersPerUnit
-                usdGeom.AddScaleOp().Set(Gf.Vec3f(scale, scale, scale))
-
         return self._geomPath
 
 
@@ -238,6 +229,7 @@ class Material:
             self.path = ''
             self.name = makeValidIdentifier(name) if name != '' else ''
         self.inputs = {}
+        self.opacityThreshold = None
 
 
     def isEmpty(self):
@@ -264,11 +256,11 @@ class Material:
     def makeUsdMaterial(self, asset):
         matPath = self.path if self.path else asset.getMaterialsPath() + '/' + self.name
         usdMaterial = UsdShade.Material.Define(asset.usdStage, matPath)
+        surfaceShader = self._createSurfaceShader(usdMaterial, asset.usdStage)
 
         if self.isEmpty():
             return usdMaterial
 
-        surfaceShader = self._createSurfaceShader(usdMaterial, asset.usdStage)
         self.updateUsdMaterial(usdMaterial, surfaceShader, asset.usdStage)
         return usdMaterial
 
@@ -280,6 +272,8 @@ class Material:
         surfaceShader = UsdShade.Shader.Define(usdStage, matPath + '/surfaceShader')
         surfaceShader.CreateIdAttr('UsdPreviewSurface')
         usdMaterial.CreateOutput('surface', Sdf.ValueTypeNames.Token).ConnectToSource(surfaceShader, 'surface')
+        if self.opacityThreshold is not None:
+            surfaceShader.CreateInput('opacityThreshold', Sdf.ValueTypeNames.Float).Set(float(self.opacityThreshold))
         return surfaceShader
 
 
@@ -302,8 +296,13 @@ class Material:
                         if not isinstance(map2, Map):
                             continue
                         if map2 != None and map2.file == map.file:
-                            textureShaderName += '_' + inputName2
-                            maps.append(map2)
+                            # channel factors (scales) shouldn't be rewritten
+                            split = (map.scale is not None and map2.scale is not None and
+                                len(map.channels) == 1 and len(map2.channels) == 1 and
+                                map.channels == map2.channels and map.scale != map2.scale)
+                            if not split:
+                                textureShaderName += '_' + inputName2
+                                maps.append(map2)
                 for map3 in maps:
                     map3.textureShaderName = textureShaderName
 
@@ -335,6 +334,9 @@ class Material:
         else:
             if map.scale != None:
                 gfScale = Gf.Vec4f(1)
+                scaleInput = textureShader.GetInput('scale')
+                if scaleInput is not None and scaleInput.Get() is not None:
+                    gfScale = scaleInput.Get()
                 if channels == 'rgb':
                     if isinstance(map.scale, list):
                         gfScale[0] = float(map.scale[0])
@@ -345,7 +347,8 @@ class Material:
                         raise
                 else:
                     gfScale[getIndexByChannel(channels)] = float(map.scale)
-                textureShader.CreateInput('scale', Sdf.ValueTypeNames.Float4).Set(gfScale)
+                if Gf.Vec4f(1) != gfScale: # skip default value
+                    textureShader.CreateInput('scale', Sdf.ValueTypeNames.Float4).Set(gfScale)
 
         fileAndExt = os.path.splitext(map.file)
         if len(fileAndExt) == 1 or (fileAndExt[-1] != '.png' and fileAndExt[-1] != '.jpg'):
@@ -381,14 +384,47 @@ class Material:
             if inputName == InputName.normal:
                 #normal map fallback is within 0 - 1
                 gfFallback = 0.5*(gfFallback + Gf.Vec4f(1.0))
-            textureShader.CreateInput('fallback', Sdf.ValueTypeNames.Float4).Set(gfFallback)
+            if Gf.Vec4f(0, 0, 0, 1) != gfFallback: # skip default value
+                textureShader.CreateInput('fallback', Sdf.ValueTypeNames.Float4).Set(gfFallback)
 
         return textureShader
+
+
+    def _isDefaultValue(self, inputName):
+        input = self.inputs[inputName]
+        if isinstance(input, Map):
+            return False
+
+        if isinstance(input, list):
+            gfVec3d = Gf.Vec3d(float(input[0]), float(input[1]), float(input[2]))
+            if InputName.diffuseColor == inputName and gfVec3d == Gf.Vec3d(0.18, 0.18, 0.18):
+                return True
+            if InputName.emissiveColor == inputName and gfVec3d == Gf.Vec3d(0, 0, 0):
+                return True
+            if InputName.normal == inputName and gfVec3d == Gf.Vec3d(0, 0, 1.0):
+                return True
+        else:
+            if InputName.metallic == inputName and float(input) == 0.0:
+                return True
+            if InputName.roughness == inputName and float(input) == 0.5:
+                return True
+            if InputName.clearcoat == inputName and float(input) == 0.0:
+                return True
+            if InputName.clearcoatRoughness == inputName and float(input) == 0.01:
+                return True
+            if InputName.opacity == inputName and float(input) == 1.0:
+                return True
+            if InputName.occlusion == inputName and float(input) == 1.0:
+                return True
+        return False
 
 
     def _addMapToUsdMaterial(self, inputIdx, usdMaterial, surfaceShader, usdStage):
         inputName = Input.names[inputIdx]
         if inputName not in self.inputs:
+            return
+
+        if self._isDefaultValue(inputName):
             return
 
         input = self.inputs[inputName]
@@ -522,6 +558,8 @@ class Skeleton:
         restMatrices = []
         bindMatrices = []
         for joint in self.joints:
+            if joint is None:
+                continue
             jointPaths.append(self.jointPaths[joint])
             restMatrices.append(self.restMatrices[joint])
             if joint in self.bindMatrices:
@@ -532,7 +570,7 @@ class Skeleton:
         usdGeom = UsdSkel.Root.Define(usdStage, sdfPath)
 
         self.usdSkeleton = UsdSkel.Skeleton.Define(usdStage, sdfPath + '/Skeleton')
-        self.usdSkeleton.CreateJointsAttr().Set(jointPaths)
+        self.usdSkeleton.CreateJointsAttr(jointPaths)
         self.usdSkeleton.CreateRestTransformsAttr(restMatrices)
         self.usdSkeleton.CreateBindTransformsAttr(bindMatrices)
         return usdGeom

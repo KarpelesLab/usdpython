@@ -25,6 +25,7 @@ sphere = UsdGeom.Sphere.Define(stage, '/' + assetName + '/Geom/sphere')
 sphere.AddTranslateOp().Set((0, 2, 0))
 
 # create PBR material
+stage.DefinePrim('/' + assetName + '/Materials', 'Scope')
 roseMaterial = UsdShade.Material.Define(stage, '/' + assetName + '/Materials/roseGoldMaterial')
 rosePbrShader = UsdShade.Shader.Define(stage, '/' + assetName + '/Materials/roseGoldMaterial/PBRShader')
 
