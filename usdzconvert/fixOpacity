@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 
 # Fix opacity wiring for usdz generated with xcode's usdz_converter 
 import zipfile
@@ -96,12 +96,12 @@ def gatherDiffuseTexture(materialPrim):
 		try:
 			assetPath = shader.GetInput("file").Get()
 		except:
-			if verboseOutput: print "Warning: unable to find texture in shader " + pbrShader.GetPath().pathString
+			if verboseOutput: print("Warning: unable to find texture in shader " + pbrShader.GetPath().pathString)
 			return None
 		if assetPath.resolvedPath is not "":
 			return (assetPath.resolvedPath, pbrShader.GetPath().pathString)
 		else:
-			print "Warning: unable to find texture" + assetPath.path + " in archive"			
+			print("Warning: unable to find texture" + assetPath.path + " in archive")
 	return None
 
 # check if pbrShader already has valid opacity connection
@@ -163,12 +163,12 @@ args=parser.parse_args()
 verboseOutput = args.verbose
 
 if len(args.files) > 1 and os.path.isdir(args.output) == False:
-	print "Warning: please specify output directory for more than one input files"
+	print("Warning: please specify output directory for more than one input files")
 	sys.exit(1)
 
 for filename in args.files:
 	if verboseOutput:
-		print "Checking file", filename
+		print("Checking file " + filename)
 	if os.path.isabs(filename):
 		cwd = os.getcwd()
 		filename = os.path.join(cwd, filename)
@@ -176,7 +176,7 @@ for filename in args.files:
 	usds=[]
 	extension = os.path.splitext(filename)[-1].lower()
 	if not os.path.exists(filename):
-		print "Warning: " + filename + " does not exist"
+		print("Warning: " + filename + " does not exist")
 		continue
 
 	if extension == '.usdz':
@@ -185,7 +185,7 @@ for filename in args.files:
 	elif extension in ['.usd', '.usda', '.usdc']:
 		usds.append(filename)
 	else:
-		if verboseOutput: print "Error: input file "+filename+" is not a USD file"
+		if verboseOutput: print("Error: input file " + filename + " is not a USD file")
 		continue
 
 	updated = False
@@ -222,7 +222,7 @@ for filename in args.files:
 			if not os.path.exists(outputDir):
 				os.makedirs(outputDir)
 			outputPath = os.path.join(outputDir, file)
-		if verboseOutput: print "Export updated usdz asset to "+outputPath
+		if verboseOutput: print("Export updated usdz asset to " + outputPath)
 		UsdUtils.CreateNewARKitUsdzPackage(usds[0], outputPath)
 
 

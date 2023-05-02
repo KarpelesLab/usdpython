@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 
 # add audio file to usdz:
 # usdzaudioimport input.usdz output.usdz --audio <sdf_path> <audio_file>
@@ -14,11 +14,11 @@ scriptVersion = 0.01
 
 
 def printError(message):
-    print '  \033[91m' + 'Error:', message + '\033[0m'
+    print('  \033[91m' + 'Error: ' + message + '\033[0m')
 
 
 def printWarning(message):
-    print '  \033[93m' + 'Warning:', message + '\033[0m'
+    print('  \033[93m' + 'Warning:' + message + '\033[0m')
 
 
 def makeValidPath(path):
@@ -70,13 +70,13 @@ class Parser:
 
 
     def printConvertNameAndVersion(self):
-        print scriptName, scriptVersion
+        print(scriptName + " " + str(scriptVersion))
 
 
 
     def printUsage(self):
         self.printConvertNameAndVersion()
-        print 'usage: usdzaudioimport inputFile [outputFile]\n\
+        print('usage: usdzaudioimport inputFile [outputFile]\n\
                    [-h] [-v]\n\
                    [-a sdfPath audioFile] [--audio sdfPath audioFile]\n\
                    [-auralMode mode]\n\
@@ -84,12 +84,12 @@ class Parser:
                    [-startTime value]\n\
                    [-endTime value]\n\
                    [-mediaOffset value]\n\
-                   [-gain value]'
+                   [-gain value]')
 
 
     def printHelpAndExit(self):
         self.printUsage()
-        print '\n\
+        print('\n\
 Adds audio files to usdz files and creates SpatialAudio nodes.\n\
 \npositional argument:\n\
   inputFile             Input usdz file.\n\
@@ -113,7 +113,7 @@ examples:\n\
     usdzaudioimport input.usdz output.usdz --audio /AssetName/Sounds/Sound1 love.mp3 -auralMode nonSpatial\n\
 \n\
     usdzaudioimport input.usdz output.usdz -a /AssetName/Sounds/Sound1 love.mp3 -auralMode nonSpatial -a /AssetName/Sounds/Sound2 /tmp/hate.mp3 -playbackMode onceFromStart\n\
-'
+')
 
         exit(0)
 
@@ -121,7 +121,7 @@ examples:\n\
     def printErrorUsageAndExit(self, message):
         self.printConvertNameAndVersion()
         printError(message)
-        print 'For more information, run "' + scriptName + ' -h"'
+        print('For more information, run "' + scriptName + ' -h"')
         exit(1)
 
 
@@ -155,7 +155,7 @@ examples:\n\
         
         if len(arguments) == 0:
             self.printUsage()
-            print 'For more information, run "' + scriptName + ' -h"'
+            print('For more information, run "' + scriptName + ' -h"')
             exit(1)
 
         while self.argumentIndex < len(self.arguments):
@@ -219,8 +219,8 @@ examples:\n\
                 elif self.out.outFilePath == '':
                     self.out.outFilePath = argument
                 else:
-                    print 'Input file:', self.out.inFilePath
-                    print 'Output file:', self.out.outFilePath
+                    print('Input file: ' + self.out.inFilePath)
+                    print('Output file:' + self.out.outFilePath)
                     self.printErrorUsageAndExit('unknown argument ' + argument)
 
             self.argumentIndex += 1
@@ -272,14 +272,14 @@ fileAndExt = os.path.splitext(parserOut.inFilePath)
 if len(fileAndExt) != 2:
     parser.printErrorUsageAndExit('input file ' + parserOut.inFilePath + ' has unsupported file extension.')
 
-print 'Input file:', parserOut.inFilePath
+print('Input file: ' + parserOut.inFilePath)
 srcExt = fileAndExt[1].lower()
 if srcExt != '.usdz':
     parser.printErrorUsageAndExit('input file ' + parserOut.inFilePath + ' is not an usdz file.')
 
 if parserOut.outFilePath == '':
     parserOut.outFilePath = parserOut.inFilePath
-print 'Output file:', parserOut.outFilePath
+print('Output file:' + parserOut.outFilePath)
 
 
 fileAndExt = os.path.splitext(parserOut.outFilePath)
@@ -299,7 +299,7 @@ stageEndTimeCode = usdStage.GetEndTimeCode()
 
 for audio in parserOut.audios:
     if parserOut.verbose:
-        print '  Add SpatialAudio ' + audio.path
+        print('  Add SpatialAudio ' + audio.path)
 
     usdAudio = UsdMedia.SpatialAudio.Define(usdStage, audio.path)
 

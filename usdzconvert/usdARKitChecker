@@ -35,9 +35,7 @@ def runValidators(filename, verboseOutput, errorData):
     mdlValidation = validateFile(filename, verboseOutput, errorData)
 
     success = usdCheckerResult and mdlValidation
-    if verboseOutput:
-        print
-    print "usdARKitChecker:", ("[Pass]" if success else "[Fail]"), filename
+    print("usdARKitChecker: " + ("[Pass]" if success else "[Fail]") + " " + filename)
 
 def main(argumentList, outErrorList=None):
     parser = argparse.ArgumentParser()
@@ -60,5 +58,5 @@ def main(argumentList, outErrorList=None):
         return 1
 
 if __name__ == '__main__':
-	argumentList = sys.argv[1:]
-	sys.exit(main(argumentList))
+    argumentList = sys.argv[1:]
+    sys.exit(main(argumentList))

@@ -1,6 +1,6 @@
 # USD Python Tools
 
-This archive contains
+This package installs to /Applications/usdpython and contains
 - `usdzconvert`, a Python-based tool to convert from various file formats to usdz
 - `usdARKitChecker`, a Python-based tool for usdz validation
 - precompiled macOS Python modules for Pixar's USD library
@@ -9,12 +9,13 @@ This archive contains
 - `usdzcreateassetlib`, a standalone tool to generate an asset library from multiple assets
 - `usdzaudioimport`, a standalone tool to attach audio files to usdz files
 
+After installation you can relocate the files.
 The easiest way to start using these command-line tools is to double-click `USD.command` in the Finder. This will open a Terminal window with all necessary environment variables set.
 
 For more details, including demos, see the WWDC 2019 session "Working with USD": 
 https://developer.apple.com/videos/play/wwdc2019/602/
 
-## usdzconvert (version 0.63)
+## usdzconvert (version 0.65)
 
 `usdzconvert` is a Python script that converts obj, gltf, fbx, abc, and usda/usdc/usd assets to usdz.
 It also performs asset validation on the generated usdz.
@@ -34,7 +35,7 @@ If your Python environment is missing PIL, you can install it by running:
 Note that FBX support in `usdzconvert` requires both Autodesk's FBX SDK and FBX Python bindings to be installed on your system.
 To make FBX bindings available to Python, uncomment the line 
 
-    # export PYTHONPATH=$PYTHONPATH:/Applications/Autodesk/FBX\ Python\ SDK/2019.0/lib/Python27_x86
+    export PYTHONPATH=$PYTHONPATH:"/Applications/Autodesk/FBX Python SDK/2020.2.1/lib/Python37_x64"
 
 in `USD.command`, and adjust the path to point to the location of fbx.so (for Python 2.7).
 
@@ -52,9 +53,11 @@ Currently `usdARKitChecker` consists of three parts:
 
 ## Precompiled macOS Python Modules for Pixar's USD Library (Version 19.11)
 
-This library was compiled using version 19.05 of [the public USD GitHub repository](http://openusd.org) with the following build script arguments (see USDPython/README.md for further details):
+This library was compiled using version 3.7.9 of Python.
 
-    python USD/build_scripts/build_usd.py --build-args TBB,extra_inc=big_iron.inc --python --no-imaging --docs --no-usdview --build-monolithic USDPython
+This library was compiled using version 22.03 of [the public USD GitHub repository](http://openusd.org) with the following build script arguments (see USDPython/README.md for further details):
+
+    python3.7 USD/build_scripts/build_usd.py --build-args TBB,extra_inc=big_iron.inc --python --no-imaging --docs --no-usdview --build-monolithic USDPython
 
 If you prefer to set your environment variables directly , 
 
@@ -63,10 +66,10 @@ To start using USD in Python, set your PATH and PYTHONPATH variables as follows 
     export PATH=$PATH:<PATH_TO_USDPYTHON>/USD
     export PYTHONPATH=$PYTHONPATH:<PATH_TO_USDPYTHON>/USD/lib/python
 
-You should then be able to start using the USD library in Python:
+You should then be able to start using the USD library in Python 3.7:
 
-    > python     
-    Python 2.7.10 (default, Feb 22 2019, 21:55:15) 
+    > python3.7
+    Python 3.7.9 (v3.7.9:13c94747c7, Aug 15 2020, 01:31:08)
     Type "help", "copyright", "credits" or "license" for more information.
     >>> import pxr
     >>> 

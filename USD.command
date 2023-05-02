@@ -4,7 +4,7 @@ export PATH=$PATH:$BASEPATH/USD:$PATH:$BASEPATH/usdzconvert;
 export PYTHONPATH=$PYTHONPATH:$BASEPATH/USD/lib/python
 
 # uncomment to set the PYTHONPATH to FBX Bindings here:
-# export PYTHONPATH=$PYTHONPATH:/Applications/Autodesk/FBX\ Python\ SDK/2019.0/lib/Python27_x86
+# export PYTHONPATH=$PYTHONPATH:"/Applications/Autodesk/FBX Python SDK/2020.2.1/lib/Python37_x64"
 
 if [[ $PYTHONPATH == *"FBX"* ]]; then
     :

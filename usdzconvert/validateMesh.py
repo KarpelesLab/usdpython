@@ -8,9 +8,6 @@ class TermColors:
 	FAIL = '\033[91m'
 	END = '\033[0m'
 
-def _Print(stream, msg):
-	print >>stream, msg
-
 def _Err(msg):
 	sys.stderr.write(TermColors.FAIL + msg + TermColors.END + '\n')
 

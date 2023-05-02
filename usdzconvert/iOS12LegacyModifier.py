@@ -11,14 +11,13 @@ try:
     imp.find_module('PIL')
     from PIL import Image
 except ImportError:
-    usdUtils.printError('failed to import PIL. Please install module, e.g. using "pip install pillow".')
+    usdUtils.printError('failed to import PIL. Please install module, e.g. using "$ sudo pip3 install pillow".')
     _pilLibraryLoaded = False
 
 
 
 class iOS12LegacyModifier:
     def __init__(self):
-        self.metersPerUnit = 0
         self.oneChannelTextures = {}
 
 
@@ -63,7 +62,7 @@ class iOS12LegacyModifier:
             image.save(newPath)
             self.oneChannelTextures[newPath] = textureFilename
             if verbose:
-                print 'One channel texture:', textureFilename
+                print('One channel texture: ' + textureFilename)
             return textureFilename
         return ''
 
@@ -101,14 +100,6 @@ class iOS12LegacyModifier:
         if opacity.file and diffuse.file and opacity.file != diffuse.file:
             usdUtils.printError('iOS12 compatibility: material ' + material.name + ' has different texture files for diffuseColor and opacity.')
             raise usdUtils.ConvertError()
-
-
-    def setMetersPerUnit(self, metersPerUnit):
-        self.metersPerUnit = metersPerUnit
-
-
-    def getMetersPerUnit(self):
-        return self.metersPerUnit
 
 
     def _getMapTextureFilename(self, material, inputName):
