@@ -34,6 +34,17 @@ class glTFComponentType:
             } [self.type]
 
 
+    def size(self):
+        return {
+            glTFComponentType.BYTE: 1,
+            glTFComponentType.UNSIGNED_BYTE: 1,
+            glTFComponentType.SHORT: 2,
+            glTFComponentType.UNSIGNED_SHORT: 2,
+            glTFComponentType.UNSIGNED_INT: 4,
+            glTFComponentType.FLOAT: 4
+            } [self.type]        
+
+
 class glFTTextureFilter: # TODO: support
     NEAREST = 9728
     LINEAR = 9729
@@ -58,6 +69,15 @@ class glTFWrappingMode:
             glTFWrappingMode.REPEAT: 'repeat'
             } [self.mode]
 
+
+class gltfPrimitiveMode:
+    POINTS = 0
+    LINES = 1
+    LINE_LOOP = 2
+    LINE_STRIP = 3
+    TRIANGLES = 4
+    TRIANGLE_STRIP = 5
+    TRIANGLE_FAN = 6
 
 
 def loadChunk(file, format):
@@ -199,6 +219,27 @@ def getXformOp(usdGeom, type):
     return None
 
 
+def indicesWithTriangleStrip(indices):
+    if len(indices) <= 3:
+        return indices
+    newIndices = [int(indices[0]), int(indices[1]), int(indices[2])]
+    for i in range(3, len(indices)):
+        newIndices.append(int(indices[i-1]))
+        newIndices.append(int(indices[i-2]))
+        newIndices.append(int(indices[i]))
+    return newIndices
+
+
+def indicesWithTriangleFan(indices):
+    if len(indices) <= 3:
+        return indices
+    newIndices = []
+    for i in range(2, len(indices)):
+        newIndices.append(int(indices[0]))
+        newIndices.append(int(indices[i-1]))
+        newIndices.append(int(indices[i]))
+    return newIndices
+
 
 class glTFNodeManager(usdUtils.NodeManager):
     def __init__(self, gltfNodes):
@@ -246,7 +287,17 @@ class Accessor:
         self.count = gltfAccessor['count']
         self.type = gltfAccessor['type']
         self.components = numOfComponents(self.type)
-        self.data = numpy.frombuffer(fileContent, fmt, self.count * self.components, offset)
+
+        self.stride = getInt(bufferView, 'byteStride')
+        if self.stride != 0 and self.stride != glTFComponentType(self.componentType).size() * self.components:
+            elementsSize = glTFComponentType(self.componentType).size() * self.components
+            data = ''
+            for i in range(self.count):
+                start = offset + i * self.stride
+                data += fileContent[start : start + elementsSize]
+            self.data = numpy.frombuffer(data, fmt, self.count * self.components)
+        else:
+            self.data = numpy.frombuffer(fileContent, fmt, self.count * self.components, offset)
 
 
 
@@ -284,10 +335,10 @@ class glTFConverter:
         fileAndExt = os.path.splitext(gltfPath)
         if len(fileAndExt) == 2 and fileAndExt[1].lower() == '.glb':
             with open(gltfPath, "rb") as file:
-                (magic, version, length) = loadChunk(file, '=3i')
-                (jsonLen, jsonType) = loadChunk(file, '=2i')
+                (magic, version, length) = loadChunk(file, '<3i')
+                (jsonLen, jsonType) = loadChunk(file, '<2i')
                 self.gltf = json.loads(file.read(jsonLen))
-                (bufferLen, bufferType) = loadChunk(file, '=2i')
+                (bufferLen, bufferType) = loadChunk(file, '<2i')
                 self.buffers.append(file.read())
         else:
             with open(gltfPath) as file:
@@ -671,11 +722,20 @@ class glTFConverter:
 
 
     def processPrimitive(self, nodeIdx, gltfPrimitive, path, skinIdx, skeleton):
-        gltfPrimitiveMode_TRIANGLES = 4
-        usdMesh = UsdGeom.Mesh.Define(self.usdStage, path)
-        if 'mode' in gltfPrimitive and gltfPrimitive['mode'] != gltfPrimitiveMode_TRIANGLES:
-            print 'Warning: only TRIANGLES as primitive.mode is supported.'
-            return usdMesh
+        mode = gltfPrimitive['mode'] if 'mode' in gltfPrimitive else gltfPrimitiveMode.TRIANGLES
+
+        usdMesh = None
+        if mode == gltfPrimitiveMode.POINTS:
+            usdMesh = UsdGeom.Points.Define(self.usdStage, path)
+        elif mode == gltfPrimitiveMode.LINES:
+            print 'Warning: LINES as primitive.mode is not supported.'
+        elif mode == gltfPrimitiveMode.LINE_LOOP:
+            print 'Warning: LINE_LOOP as primitive.mode is not supported.'
+        elif mode == gltfPrimitiveMode.LINE_STRIP:
+            print 'Warning: LINE_STRIP as primitive.mode is not supported.'
+
+        if usdMesh is None:
+            usdMesh = UsdGeom.Mesh.Define(self.usdStage, path)
 
         usdSkelBinding = None
         skin = None
@@ -754,20 +814,39 @@ class glTFConverter:
             else:
                 print "Warning: Unsupported primitive attribute:", key
 
-        if 'indices' in gltfPrimitive:
-            accessor = Accessor(self, gltfPrimitive['indices'])
-            usdMesh.CreateFaceVertexIndicesAttr(accessor.data)
-            count = accessor.count
-        elif count > 0:
-            count = int(count / 3) * 3 # should be divisible by 3
-            indices = [0] * count
-            for ind in xrange(count):
-                indices[ind] = ind
-            usdMesh.CreateFaceVertexIndicesAttr(indices)
+        if (mode == gltfPrimitiveMode.TRIANGLES or 
+            mode == gltfPrimitiveMode.TRIANGLE_STRIP or 
+            mode == gltfPrimitiveMode.TRIANGLE_FAN):
+            if 'indices' in gltfPrimitive:
+                accessor = Accessor(self, gltfPrimitive['indices'])
+                count = accessor.count
+                indices = accessor.data
+                if mode == gltfPrimitiveMode.TRIANGLE_STRIP:
+                    indices = indicesWithTriangleStrip(accessor.data)
+                    count = len(indices)
+                elif mode == gltfPrimitiveMode.TRIANGLE_FAN:
+                    indices = indicesWithTriangleFan(accessor.data)
+                    count = len(indices)
+                usdMesh.CreateFaceVertexIndicesAttr(indices)
+            elif count > 0:
+                if mode == gltfPrimitiveMode.TRIANGLES:
+                    count = int(count / 3) * 3 # should be divisible by 3
+                indices = [0] * count
+                for ind in xrange(count):
+                    indices[ind] = ind 
+                if mode == gltfPrimitiveMode.TRIANGLE_STRIP:
+                    indices = indicesWithTriangleStrip(indices)
+                    count = len(indices)
+                elif mode == gltfPrimitiveMode.TRIANGLE_FAN:
+                    indices = indicesWithTriangleFan(indices)
+                    count = len(indices)
+                usdMesh.CreateFaceVertexIndicesAttr(indices)
 
-        numFaceVertexCounts = count / 3
-        faceVertexCounts = [3] * numFaceVertexCounts
-        usdMesh.CreateFaceVertexCountsAttr(faceVertexCounts) # per-face vertex indices
+            numFaceVertexCounts = count / 3
+            faceVertexCounts = [3] * numFaceVertexCounts
+            usdMesh.CreateFaceVertexCountsAttr(faceVertexCounts) # per-face vertex indices
+
+            usdMesh.CreateSubdivisionSchemeAttr().Set(UsdGeom.Tokens.none)
 
         # bind material to mesh
         if 'material' in gltfPrimitive:
@@ -779,7 +858,6 @@ class glTFConverter:
                 doubleSidedAttr = usdMesh.CreateDoubleSidedAttr()
                 doubleSidedAttr.Set(True)
 
-        usdMesh.CreateSubdivisionSchemeAttr().Set(UsdGeom.Tokens.none)
         return usdMesh
 
 

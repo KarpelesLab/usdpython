@@ -298,10 +298,12 @@ def createMesh(objData, geomPath, group, groupName, stage):
 def linesContinuation(fileHandle):
     for line in fileHandle:
         line = line.rstrip('\n')
+        line = line.rstrip()
         while line.endswith('\\'):
             thisLine = line[:-1]
             nextLine = next(fileHandle).rstrip('\n')
-            line = thisLine + nextLine
+            nextLine = nextLine.strip()
+            line = thisLine + " "+ nextLine
 
         yield line
 

@@ -27,7 +27,7 @@ class ConvertExit(Exception):
 
 
 class USDParameters:
-    version = 0.56
+    version = 0.58
     materialsPath = '/Materials'
 
     def __init__(self, usdStage, verbose, url, copyright, assetPath):
