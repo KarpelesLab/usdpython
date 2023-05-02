@@ -86,11 +86,6 @@ def loadChunk(file, format):
     return unpack(file.read(size))
 
 
-def time2Code(time):
-    fps = 24
-    return int(time * fps + 0.5)
-
-
 def numOfComponents(strType):
     if strType == 'VEC2':
         return 2
@@ -180,15 +175,14 @@ def getTransformScale(gltfNode):
         return Gf.Vec3f(1, 1, 1) # TODO: support decomposition?
 
 
-def getAnimValue(animJointComp, time):
-    if time in animJointComp:
-        return animJointComp[time]
-
+def getInterpolatedValue(timeValueDic, time, isSlerp=False):
+    if time in timeValueDic:
+        return timeValueDic[time]
     # find neighbor keys for time
     # to get an interpolated value
     lessMaxTime = -1
     greaterMinTime = -1
-    for t in animJointComp:
+    for t in timeValueDic:
         if t < time:
             if lessMaxTime == -1:
                 lessMaxTime = t
@@ -201,14 +195,18 @@ def getAnimValue(animJointComp, time):
                 greaterMinTime = t
 
     if lessMaxTime == -1:
-        return animJointComp[greaterMinTime]
+        return timeValueDic[greaterMinTime]
     if greaterMinTime == -1:
-        return animJointComp[lessMaxTime]
+        return timeValueDic[lessMaxTime]
 
-    l = float(time - lessMaxTime) / (greaterMinTime - lessMaxTime)
-    g = float(greaterMinTime - time) / (greaterMinTime - lessMaxTime)
+    k = float(time - lessMaxTime) / (greaterMinTime - lessMaxTime)
 
-    return g * animJointComp[lessMaxTime] + l * animJointComp[greaterMinTime]
+    if isSlerp:
+        q = Gf.Slerp(k, timeValueDic[lessMaxTime], timeValueDic[greaterMinTime])
+        i = q.GetImaginary()
+        return Gf.Quatf(q.GetReal(), Gf.Vec3f(i[0], i[1], i[2]))
+
+    return timeValueDic[lessMaxTime] * (1-k) + timeValueDic[greaterMinTime] * k
 
 
 def getXformOp(usdGeom, type):
@@ -242,21 +240,21 @@ def indicesWithTriangleFan(indices):
 
 
 class glTFNodeManager(usdUtils.NodeManager):
-    def __init__(self, gltfNodes):
+    def __init__(self, converter):
         usdUtils.NodeManager.__init__(self)
-        self.gltfNodes = gltfNodes
+        self.converter = converter
 
 
     def overrideGetName(self, strNodeIdx):
         # TODO: make sure there is no duplicate names
         nodeIdx = int(strNodeIdx)
-        gltfNode = self.gltfNodes[nodeIdx]
+        gltfNode = self.converter.gltf['nodes'][nodeIdx]
         return getName(gltfNode, 'node_', nodeIdx)
 
 
     def overrideGetChildren(self, strNodeIdx):
         children = []
-        gltfNode = self.gltfNodes[int(strNodeIdx)]
+        gltfNode = self.converter.gltf['nodes'][int(strNodeIdx)]
         if 'children' in gltfNode:
             for child in gltfNode['children']:
                 children.append(str(child))
@@ -264,8 +262,16 @@ class glTFNodeManager(usdUtils.NodeManager):
 
 
     def overrideGetLocalTransformGfMatrix4d(self, strNodeIdx):
-        gltfNode = self.gltfNodes[int(strNodeIdx)]
+        gltfNode = self.converter.gltf['nodes'][int(strNodeIdx)]
         return getMatrixTransform(gltfNode)
+
+
+    def overrideGetParent(self, node):
+        parentIdx = self.converter.getParent(int(node))
+        if parentIdx == -1:
+            return None
+        return str(parentIdx)
+
 
 
 class Accessor:
@@ -313,6 +319,7 @@ class glTFConverter:
         self.verbose = verbose
         self._worldTransforms = {} # use self.getWorldTransform(nodeIdx)
         self._parents = {} # use self.getParent(nodeIdx)
+        self._loadFailed = False
 
         filenameFull = gltfPath.split('/')[-1]
         self.srcFolder = gltfPath[:len(gltfPath)-len(filenameFull)]
@@ -322,10 +329,17 @@ class glTFConverter:
 
         self.asset = usdUtils.Asset(usdPath)
 
-        self.load(gltfPath)
+        try:
+            self.load(gltfPath)
+        except:
+            print "Error: can't load the input file."
+            self._loadFailed = True
+            return
+        if not self.checkGLTFVersion():
+            return
         self.readAllBuffers()
 
-        self.nodeMan = glTFNodeManager(self.gltf['nodes'])
+        self.nodeMan = glTFNodeManager(self)
         self.skinning = usdUtils.Skinning(self.nodeMan)
 
         self.postponeUsdMeshToSkeleton = {} # if USD mesh created before UsdSkeleton, bind it later 
@@ -343,6 +357,18 @@ class glTFConverter:
         else:
             with open(gltfPath) as file:
                 self.gltf = json.load(file)
+
+
+    def checkGLTFVersion(self):
+        if 'asset' in self.gltf and 'version' in self.gltf['asset']:
+            version = self.gltf['asset']['version']
+            if float(version) < 2.0 or float(version) >= 3.0:
+                print 'Error: glTF 2.x is supported only. Version of glTF of input file is', version
+                self._loadFailed = True
+        else:
+            print "Error: can't detect the version of glTF."
+            self._loadFailed = True
+        return not self._loadFailed
 
 
     def _fillWorldTransforms(self, children, parentWorldTransform):
@@ -568,8 +594,8 @@ class glTFConverter:
         for skinIdx in range(len(self.gltf['skins'])):
             gltfSkin = self.gltf['skins'][skinIdx]
 
-            rootIdx = gltfSkin['skeleton'] if 'skeleton' in gltfSkin else gltfSkin['joints'][0]
-            skin = usdUtils.Skin(str(rootIdx))
+            root = str(gltfSkin['skeleton']) if 'skeleton' in gltfSkin else None
+            skin = usdUtils.Skin(root)
 
             gltfJoints = gltfSkin['joints']
             for jointIdx in gltfJoints:
@@ -598,8 +624,27 @@ class glTFConverter:
             gltfTarget = gltfChannel['target']
             nodeIdx = gltfTarget['node']
             skeleton = self.skinning.findSkeletonByJoint(str(nodeIdx))
-            return skeleton
+            if skeleton is not None:
+                return skeleton
         return None
+
+
+    def prepareAnimations(self):
+        if 'animations' not in self.gltf:
+            return
+        # find good FPS based on key time data
+        minTimeInterval = 1.0 / 24 # default for USD
+        epsilon = 0.01
+        for gltfAnim in self.gltf['animations']:
+            for gltfChannel in gltfAnim['channels']:
+                samplerIdx = gltfChannel['sampler']
+                gltfSampler = gltfAnim['samplers'][samplerIdx]
+                keyTimesAcc = Accessor(self, gltfSampler['input'])
+                for el in xrange(keyTimesAcc.count-1):
+                    timeInterval = keyTimesAcc.data[el+1] - keyTimesAcc.data[el]
+                    if minTimeInterval > timeInterval and timeInterval > epsilon:
+                        minTimeInterval = timeInterval
+        self.asset.setFPS(int(1.0 / minTimeInterval))
 
 
     def processSkeletonAnimation(self):
@@ -617,9 +662,9 @@ class glTFConverter:
             # each of it has a dictionary with time keys {0: value, 1: next value... }
             animJoints = {}
 
-            gltfNodes = self.gltf['nodes']
-            minTime = 999999
-            maxTime = -1
+            translationTimeSet = set()
+            rotationTimeSet = set()
+            scaleTimeSet = set()
 
             # Fill animJoints
             for gltfChannel in gltfAnim['channels']:
@@ -646,30 +691,27 @@ class glTFConverter:
 
                 values = {}
 
-                if targetPath == 'scale':
+                if targetPath == 'translation':
                     for el in xrange(keyTimesAcc.count):
-                        time = time2Code(keyTimesAcc.data[el])
+                        time = float(keyTimesAcc.data[el])
+                        translationTimeSet.add(time)
                         p = el * keyValuesAcc.components
                         values[time] = Gf.Vec3f(float(v[p]), float(v[p + 1]), float(v[p + 2]))
-                        minTime = min(minTime, time)
-                        maxTime = max(maxTime, time)
-                    animJoints[strNodeIdx][2] = values
+                    animJoints[strNodeIdx][0] = values
                 elif targetPath == 'rotation':
                     for el in xrange(keyTimesAcc.count):
-                        time = time2Code(keyTimesAcc.data[el])
+                        time = float(keyTimesAcc.data[el])
+                        rotationTimeSet.add(time)
                         p = el * keyValuesAcc.components
                         values[time] = Gf.Quatf(float(v[p + 3]), Gf.Vec3f(float(v[p]), float(v[p + 1]), float(v[p + 2])))
-                        animJoints[strNodeIdx][1] = values
-                        minTime = min(minTime, time)
-                        maxTime = max(maxTime, time)
-                elif targetPath == 'translation':
+                    animJoints[strNodeIdx][1] = values
+                elif targetPath == 'scale':
                     for el in xrange(keyTimesAcc.count):
-                        time = time2Code(keyTimesAcc.data[el])
+                        time = float(keyTimesAcc.data[el])
+                        scaleTimeSet.add(time)
                         p = el * keyValuesAcc.components
                         values[time] = Gf.Vec3f(float(v[p]), float(v[p + 1]), float(v[p + 2]))
-                        animJoints[strNodeIdx][0] = values
-                        minTime = min(minTime, time)
-                        maxTime = max(maxTime, time)
+                    animJoints[strNodeIdx][2] = values
                 else:
                     if self.verbose:
                         print "  Warning: Skeletal animation: unsupported target path:", targetPath
@@ -687,35 +729,58 @@ class glTFConverter:
 
             usdSkelAnim.CreateJointsAttr().Set(jointPaths)
 
-            scaleAttr = usdSkelAnim.CreateScalesAttr()
-            rotateAttr = usdSkelAnim.CreateRotationsAttr()
-            translateAttr = usdSkelAnim.CreateTranslationsAttr()
+            gltfNodes = self.gltf['nodes']
 
-            for time in range(minTime, maxTime + 1):
-                translations = []
-                rotations = []
-                scales = []
+            # translations attribute
+            times = sorted(translationTimeSet)
+            attr = None
+            for time in times:
+                values = []
                 for joint in skeleton.joints:
                     if joint in animJoints:
                         animJoint = animJoints[joint]
                         if animJoint[0]:
-                            translations.append(getAnimValue(animJoint[0], time))
+                            values.append(getInterpolatedValue(animJoint[0], time))
                         else:
-                            translations.append(getTransformTranslation(gltfNodes[int(joint)]))
+                            values.append(getTransformTranslation(gltfNodes[int(joint)]))
+                if len(values):
+                    if attr is None:
+                        attr = usdSkelAnim.CreateTranslationsAttr()
+                    attr.Set(values, Usd.TimeCode(self.asset.toTimeCode(time, True)))
+
+            # rotations attribute
+            times = sorted(rotationTimeSet)
+            attr = None
+            for time in times:
+                values = []
+                for joint in skeleton.joints:
+                    if joint in animJoints:
+                        animJoint = animJoints[joint]
                         if animJoint[1]:
-                            rotations.append(getAnimValue(animJoint[1], time))
+                            values.append(getInterpolatedValue(animJoint[1], time, True))
                         else:
-                            rotations.append(getTransformRotation(gltfNodes[int(joint)]))
+                            values.append(getTransformRotation(gltfNodes[int(joint)]))
+                if len(values):
+                    if attr is None:
+                        attr = usdSkelAnim.CreateRotationsAttr()
+                    attr.Set(values, Usd.TimeCode(self.asset.toTimeCode(time, True)))
+
+            # scales attribute
+            times = sorted(scaleTimeSet)
+            attr = None
+            for time in times:
+                values = []
+                for joint in skeleton.joints:
+                    if joint in animJoints:
+                        animJoint = animJoints[joint]
                         if animJoint[2]:
-                            scales.append(getAnimValue(animJoint[2], time))
+                            values.append(getInterpolatedValue(animJoint[2], time))
                         else:
-                            scales.append(getTransformScale(gltfNodes[int(joint)]))
-                if len(scales):
-                    scaleAttr.Set(scales, Usd.TimeCode(time))
-                if len(rotations):
-                    rotateAttr.Set(rotations, Usd.TimeCode(time))
-                if len(translations):
-                    translateAttr.Set(translations, Usd.TimeCode(time))
+                            values.append(getTransformScale(gltfNodes[int(joint)]))
+                if len(values):
+                    if attr is None:
+                        attr = usdSkelAnim.CreateScalesAttr()
+                    attr.Set(values, Usd.TimeCode(self.asset.toTimeCode(time, True)))
 
             skeleton.setSkeletalAnimation(usdSkelAnim)
             self.usdSkelAnims.append(usdSkelAnim)
@@ -978,7 +1043,7 @@ class glTFConverter:
                     if op == None:
                         op = usdGeom.AddScaleOp()
                     for el in xrange(keyTimesAcc.count):
-                        time = time2Code(keyTimesAcc.data[el])
+                        time = self.asset.toTimeCode(keyTimesAcc.data[el], True)
                         p = el * keyValuesAcc.components
                         op.Set(time = time, value = Gf.Vec3f(float(v[p]), float(v[p + 1]), float(v[p + 2])))
                 elif path == 'rotation':
@@ -986,7 +1051,7 @@ class glTFConverter:
                     if op == None:
                         op = usdGeom.AddOrientOp()
                     for el in xrange(keyTimesAcc.count):
-                        time = time2Code(keyTimesAcc.data[el])
+                        time = self.asset.toTimeCode(keyTimesAcc.data[el], True)
                         p = el * keyValuesAcc.components
                         op.Set(time = time, value = Gf.Quatf(float(v[p + 3]), Gf.Vec3f(float(v[p]), float(v[p + 1]), float(v[p + 2]))))
                 if path == 'translation':
@@ -994,7 +1059,7 @@ class glTFConverter:
                     if op == None:
                         op = usdGeom.AddTranslateOp()
                     for el in xrange(keyTimesAcc.count):
-                        time = time2Code(keyTimesAcc.data[el])
+                        time = self.asset.toTimeCode(keyTimesAcc.data[el], True)
                         p = el * keyValuesAcc.components
                         op.Set(time = time, value = Gf.Vec3f(float(v[p]), float(v[p + 1]), float(v[p + 2])))
 
@@ -1007,15 +1072,19 @@ class glTFConverter:
 
 
     def makeUsdStage(self):
+        if self._loadFailed:
+            return None
         self.usdStage = self.asset.makeUsdStage()
         #gltf units for all linear distance are meters
         self.usdStage.SetMetadata("metersPerUnit", 1)
         self.createMaterials()
         self.prepareSkinning()
+        self.prepareAnimations()
         self.processNodeChildren(self.gltf['scenes'][0]['nodes'], self.asset.getGeomPath(), None)
         self.bindPostponedSkeletons()
         self.processSkeletonAnimation()
         self.processNodeTransformAnimation()
+        self.asset.finalize()
         return self.usdStage
 
 

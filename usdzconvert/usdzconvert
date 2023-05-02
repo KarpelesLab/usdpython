@@ -27,7 +27,7 @@ class ConvertExit(Exception):
 
 
 class USDParameters:
-    version = 0.58
+    version = 0.59
     materialsPath = '/Materials'
 
     def __init__(self, usdStage, verbose, url, copyright, assetPath):
@@ -607,6 +607,10 @@ def process(argumentList):
         global usdStageWithGlTF_module
         usdStageWithGlTF_module = importlib.import_module("usdStageWithGlTF")
         usdStage = usdStageWithGlTF_module.usdStageWithGlTF(srcPath, tmpPath, parserOut.verbose)
+    elif '.fbx' == srcExt:
+        global usdStageWithFbx_module
+        usdStageWithFbx_module = importlib.import_module("usdStageWithFbx")
+        usdStage = usdStageWithFbx_module.usdStageWithFbx(srcPath, tmpPath, parserOut.verbose)
     else:
         parser.printError('input file ' + parserOut.inFilePath + ' has unsupported file extension.')
 

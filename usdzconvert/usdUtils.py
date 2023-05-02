@@ -3,6 +3,7 @@
 import os.path
 from shutil import copyfile
 import re
+import math
 from pxr import *
 
 
@@ -80,6 +81,9 @@ class Asset:
         self.usdPath = usdPath
         self.usdStage = usdStage
         self.defaultPrim = None
+        self.beginTime = float('inf')
+        self.endTime = float('-inf')
+        self.timeCodesPerSecond = 24 # default for USD
         self._geomPath = ''
         self._materialsPath = ''
         self._animationsPath = ''
@@ -116,6 +120,33 @@ class Asset:
         return self._animationsPath
 
 
+    def setFPS(self, fps):
+        # set one time code per frame
+        self.timeCodesPerSecond = fps
+
+
+    def extentTime(self, time):
+        if math.isinf(self.endTime):
+            self.beginTime = time
+            self.endTime = time
+            return
+        if self.beginTime > time:
+            self.beginTime = time
+        if self.endTime < time:
+            self.endTime = time
+
+
+    def toTimeCode(self, time, extentTime=False):
+        if extentTime:
+            self.extentTime(time)
+        real = time * self.timeCodesPerSecond
+        round = int(real + 0.5)
+        epsilon = 0.001
+        if abs(real - round) < epsilon:
+            return round
+        return real
+
+
     def makeUsdStage(self):
         # debug
         # assert self.usdStage is None, 'Trying to create another usdStage'
@@ -129,6 +160,13 @@ class Asset:
         self.usdStage.SetDefaultPrim(self.defaultPrim)
 
         return self.usdStage
+
+
+    def finalize(self):
+        if not math.isinf(self.endTime):
+            self.usdStage.SetStartTimeCode(self.toTimeCode(self.beginTime))
+            self.usdStage.SetEndTimeCode(self.toTimeCode(self.endTime))
+            self.usdStage.SetTimeCodesPerSecond(self.timeCodesPerSecond)
 
 
 
@@ -372,6 +410,32 @@ class NodeManager:
         # assert 0, "Can't find overriden method overrideGetLocaLTransform for node manager"
         pass
 
+    def overrideGetParent(self, node):
+        pass
+
+
+    def getCommonParent(self, node1, node2):
+        parent1 = node1
+        while parent1 is not None:
+            parent2 = node2
+            while parent2 is not None:
+                if parent1 == parent2:
+                    return parent2
+                parent2 = self.overrideGetParent(parent2)
+            parent1 = self.overrideGetParent(parent1)
+        return None
+
+
+    def findRoot(self, nodes):
+        if len(nodes) == 0:
+            return None
+        if len(nodes) == 1:
+            return nodes[0]
+        parent = nodes[0]
+        for i in range(1, len(nodes)):
+            parent = self.getCommonParent(parent, nodes[i])
+        return parent
+
 
 
 class Skin:
@@ -506,6 +570,8 @@ class Skinning:
         for skin in self.skins:
             if len(skin.joints) < 1:
                 continue
+            if skin.root == None:
+                skin.root = self.nodeMan.findRoot(skin.joints)
             skeleton = self.findSkeletonByJoint(skin.joints[0])
             if skeleton is None:
                 skeleton = self.createSkeleton(skin.root)

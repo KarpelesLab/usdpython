@@ -5,9 +5,8 @@ This archive contains
 - precompiled macOS Python modules for Pixar's USD library
 - a set of sample scripts that demonstrate how to write usd files
 - the `fixOpacity` tool
-- usdzcreateassetlib, a standalone tool to generate an asset library from multiple assets
 
-## usdzconvert (version 0.58)
+## usdzconvert (version 0.59)
 
 usdzconvert is a Python script that converts obj and gltf models to usdz (with further formats coming soon).
 It also performs asset validation on the generated usdz (using Pixar's usdchecker and further checks).
@@ -57,9 +56,4 @@ Each script generates a .usd and a .usdz file in the `assets` sub folder, and al
 If you converted your usdz asset with Xcode's usdz_converter, and it has translucent materials that render opaque in iOS 13, use this script to correct the asset's translucent materials:
 
     fixOpacity model.usdz
-
-## usdzcreateassetlib
-
-usdzcreateassetlib is a script that generates a single-file asset library from multiple usdz assets. The result is a nested usdz file that contains the source usdz assets and references them in a variant set.
-This script does not depend on the USD library, which should make it easy to deploy on servers.
 
