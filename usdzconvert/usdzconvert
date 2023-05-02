@@ -13,21 +13,14 @@ try:
     from pxr import *
     import usdUtils
 except ImportError:
-    print "Error: failed to import pxr module. Please add path to USD Python bindings to your PYTHONPATH."
+    usdUtils.printError("failed to import pxr module. Please add path to USD Python bindings to your PYTHONPATH.")
     usdLibLoaded = False
 
 __all__ = ['convert']
 
 
-class ConvertError(Exception):
-    pass
-
-class ConvertExit(Exception):
-    pass
-
-
 class USDParameters:
-    version = 0.60
+    version = 0.61
     materialsPath = '/Materials'
 
     def __init__(self, usdStage, verbose, url, copyright, assetPath):
@@ -39,7 +32,7 @@ class USDParameters:
         self.usdMaterialsByName = {} # store materials by name
         self.defaultMaterial = None
         self.assetName = ''
-        self.asset = usdUtils.Asset(assetPath, usdStage)
+        self.asset = usdUtils.Asset(assetPath, None, usdStage)
 
 
 
@@ -51,6 +44,7 @@ class ParserOut:
         self.materials = []
         self.verbose = False
         self.copyTextures = False
+        self.iOS12 = False
         self.url = ''
         self.copyright = ''
         self.metersPerUnit = 0
@@ -67,14 +61,20 @@ class Parser:
         self.texCoordSet = 'st'
 
 
-    def printUsage(self):
+    def printConvertNameAndVersion(self):
         print 'usdzconvert', USDParameters.version
+
+
+
+    def printUsage(self):
+        self.printConvertNameAndVersion()
         print 'usage: usdzconvert inputFile [outputFile]\n\
                    [-h] [-f file] [-v]\n\
                    [-url url]\n\
                    [-copyright copyright]\n\
                    [-copytextures]\n\
                    [-metersPerUnit value]\n\
+                   [-iOS12]\n\
                    [-m materialName]        [-texCoordSet name]\n\
                    [-diffuseColor           r,g,b]\n\
                    [-diffuseColor           <file> fr,fg,fb]\n\
@@ -100,10 +100,10 @@ class Parser:
         self.printUsage()
         print '\n\
 Converts 3D model file to usd/usda/usdc/usdz.\n\
-\npositional arguments:\n\
-  inputFiles            Input files: OBJ/glTF files.\n\
+\npositional argument:\n\
+  inputFile             Input file: OBJ/glTF/FBX files.\n\
 \noptional arguments:\n\
-  outputFiles           Output .usd/usda/usdc/usdz files.\n\
+  outputFile            Output .usd/usda/usdc/usdz files.\n\
   -h, --help            Show this help message and exit.\n\
   -f <file>             Read arguments from <file>\n\
   -v                    Verbose output.\n\
@@ -115,6 +115,7 @@ Converts 3D model file to usd/usda/usdc/usdz.\n\
   -m materialName       Subsequent material arguments apply to this material.\n\
                         If no material is present in input file, a material of\n\
                         this name will be generated.\n\
+  -iOS12                Make output file compatible with iOS 12 frameworks\n\
   -texCoordSet name     The name of the texture coordinates to use for current\n\
                         material. Default texture coordinate set is "st".\n\
                         \n\
@@ -161,22 +162,37 @@ Converts 3D model file to usd/usda/usdc/usdz.\n\
   -opacity ch <file> fc Use <file> as texture for opacity.\n\
                         ch: (optional) texture color channel (r, g, b or a).\n\
                         fc: (optional) fallback constant in the range [0..1]\n\
-\nexamples:\n\
+  -clearcoat c          Set clearcoat to constant c, in the range [0..1]\n\
+  -clearcoat ch <file> fc\n\
+                        Use <file> as texture for clearcoat.\n\
+                        ch: (optional) texture color channel (r, g, b or a).\n\
+                        fc: (optional) fallback constant in the range [0..1]\n\
+  -clearcoatRoughness c Set clearcoat roughness to constant c, in the range [0..1]\n\
+  -clearcoatRoughness ch <file> fc\n\
+                        Use <file> as texture for clearcoat roughness.\n\
+                        ch: (optional) texture color channel (r, g, b or a).\n\
+                        fc: (optional) fallback constant in the range [0..1]\n\
+\n\
+examples:\n\
     usdzconvert chicken.gltf\n\
-    \n\
+\n\
     usdzconvert cube.obj -diffuseColor albedo.png\n\
-    \n\
+\n\
     usdzconvert cube.obj -diffuseColor albedo.png -opacity a albedo.png\n\
-    \n\
-    usdzconvert vase.obj -m bodyMaterial -diffuseColor body.png -opacity a body.png -metallic r metallicRoughness.png -roughness g metallicRoughness.png -normal normal.png -occlusion ao.png'
+\n\
+    usdzconvert vase.obj -m bodyMaterial -diffuseColor body.png -opacity a body.png -metallic r metallicRoughness.png -roughness g metallicRoughness.png -normal normal.png -occlusion ao.png\n\
+\n\
+    usdzconvert subset.obj -m leftMaterial -diffuseColor left.png -m rightMaterial -diffuseColor right.png\n\
+'
 
-        raise ConvertExit()
+        raise usdUtils.ConvertExit()
 
 
     def printErrorUsageAndExit(self, message):
-        self.printUsage()
-        print 'Error:', message
-        raise ConvertError()
+        self.printConvertNameAndVersion()
+        usdUtils.printError(message)
+        print 'For more information, run "usdzconvert -h"'
+        raise usdUtils.ConvertError()
 
 
     def loadArgumentsFromFile(self, filename):
@@ -271,13 +287,17 @@ Converts 3D model file to usd/usda/usdc/usdz.\n\
             filename = parameter
 
         if channelsCount != 1 and channels != '' or channels == 'rgb':
-            print 'Warning: invalid channel', channels, ' for argument', argument
+            usdUtils.printWarning('invalid channel ' + channels + ' for argument ' + argument)
             channels = ''
 
 
         fallback = None
         if self.isNextArgumentsAreFloats(channelsCount):
             fallback = self.getParameters(channelsCount, argument)
+
+        if channels == '':
+            index = usdUtils.Input.names.index(inputName)
+            channels = usdUtils.Input.channels[index]
 
         self.out.materials[-1].inputs[inputName] = usdUtils.Map(channels, filename, fallback, self.texCoordSet)
         return Ok
@@ -295,7 +315,8 @@ Converts 3D model file to usd/usda/usdc/usdz.\n\
         
         if len(arguments) == 0:
             self.printUsage()
-            raise ConvertError()
+            print 'For more information, run "usdzconvert -h"'
+            raise usdUtils.ConvertExit()
 
         while self.argumentIndex < len(self.arguments):
             argument = self.arguments[self.argumentIndex]
@@ -307,6 +328,8 @@ Converts 3D model file to usd/usda/usdc/usdz.\n\
                     self.out.verbose = True
                 elif '-copytextures' == argument:
                     self.out.copyTextures = True
+                elif '-iOS12' == argument:
+                    self.out.iOS12 = True
                 elif '-copyright' == argument:
                     self.out.copyright = self.getParameters(1, argument)
                     print self.out.copyright
@@ -366,8 +389,8 @@ def createMaterial(params, materialName):
     if params.verbose:
         print '  creating material at path:', matPath
     if not Sdf.Path.IsValidIdentifier(materialName):
-        print "Error: failed to create material by specified path."
-        raise ConvertError()
+        usdUtils.printError("failed to create material by specified path.")
+        raise usdUtils.ConvertError()
 
     surfaceShader = UsdShade.Shader.Define(params.usdStage, matPath + '/Shader')
     surfaceShader.CreateIdAttr('UsdPreviewSurface')
@@ -490,7 +513,10 @@ def copyTexturesFromStageToFolder(params, srcPath, folder):
                 continue
             if filename in copiedFiles:
                 continue
-            filePath = srcFolder + '/' + filename if srcFolder else filename
+            if srcFolder and filename[0] != '/':
+                filePath = srcFolder + '/' + filename
+            else:
+                filePath = filename
             usdUtils.copy(filePath, folder + '/' + filename, params.verbose)
             copiedFiles[filename] = filename
 
@@ -585,26 +611,36 @@ def process(argumentList):
 
     tmpFolder = tempfile.mkdtemp('usdzconvert')
 
+    legacyModifier = None
+    if parserOut.iOS12:
+        iOS12Compatible_module = importlib.import_module("iOS12LegacyModifier")
+        legacyModifier = iOS12Compatible_module.createLegacyModifier()
+        legacyModifier.setMetersPerUnit(parserOut.metersPerUnit)
+        print 'Converting in iOS12 compatiblity mode.'
 
     tmpPath = dstFileAndExt[0] + '.usdc' if dstIsUsdz else dstPath
     tmpBasename = os.path.basename(tmpPath)
     tmpPath = tmpFolder + '/' + tmpBasename
 
+    if parserOut.verbose and parserOut.copyTextures and dstIsUsdz:
+        usdUtils.printWarning('argument -copytextures works for .usda and .usdc output files only.')
+
+    copyTextures = parserOut.copyTextures and not dstIsUsdz
     srcIsUsd = False;
     usdStage = None
     if '.obj' == srcExt:
         global usdStageWithObj_module
         usdStageWithObj_module = importlib.import_module("usdStageWithObj")
         # this line can be updated with Pixar's backend loader
-        usdStage = usdStageWithObj_module.usdStageWithObj(srcPath, tmpPath, parserOut.verbose)
+        usdStage = usdStageWithObj_module.usdStageWithObj(srcPath, tmpPath, legacyModifier, parserOut.verbose)
     elif '.gltf' == srcExt or '.glb' == srcExt:
         global usdStageWithGlTF_module
         usdStageWithGlTF_module = importlib.import_module("usdStageWithGlTF")
-        usdStage = usdStageWithGlTF_module.usdStageWithGlTF(srcPath, tmpPath, parserOut.verbose)
+        usdStage = usdStageWithGlTF_module.usdStageWithGlTF(srcPath, tmpPath, legacyModifier, copyTextures, parserOut.verbose)
     elif '.fbx' == srcExt:
         global usdStageWithFbx_module
         usdStageWithFbx_module = importlib.import_module("usdStageWithFbx")
-        usdStage = usdStageWithFbx_module.usdStageWithFbx(srcPath, tmpPath, parserOut.verbose)
+        usdStage = usdStageWithFbx_module.usdStageWithFbx(srcPath, tmpPath, legacyModifier, copyTextures, parserOut.verbose)
     elif '.usd' == srcExt or '.usda' == srcExt or '.usdc' == srcExt:
         usdStage = Usd.Stage.Open(srcPath)
         srcIsUsd = True;
@@ -620,13 +656,13 @@ def process(argumentList):
         parser.printErrorUsageAndExit('input file ' + parserOut.inFilePath + ' has unsupported file extension.')
 
     if usdStage == None:
-        print "Error: failed to create USD stage."
-        raise ConvertError()
+        usdUtils.printError("failed to create USD stage.")
+        raise usdUtils.ConvertError()
 
     params = USDParameters(usdStage, parserOut.verbose, parserOut.url, parserOut.copyright, tmpPath)
     createStageMetadata(params)
 
-    if parserOut.metersPerUnit != 0:
+    if parserOut.metersPerUnit != 0 and legacyModifier is None:
         usdStage.SetMetadata("metersPerUnit", parserOut.metersPerUnit)
 
     rootPrim = None
@@ -645,18 +681,25 @@ def process(argumentList):
 
     if srcIsUsd:
         if not (len(parserOut.materials) == 1 and parserOut.materials[0].isEmpty()):
-            print 'Warning: Material arguments are ignored for .usda/usdc input files.'
+            usdUtils.printWarning('Material arguments are ignored for .usda/usdc input files.')
     else:
         # update usd materials with command line material arguments
         for material in parserOut.materials:
+
+            if legacyModifier is not None:
+                legacyModifier.opacityAndDiffuseOneTexture(material)
+
             if material.name == '':
                 # if materials are not specified, then apply default material to all materials
                 if not material.isEmpty():
                     addDefaultMaterialToGeometries(params, params.usdStage.GetPseudoRoot())
 
+                    copyMaterialTextures(params, material, srcPath, dstPath, tmpFolder)
+                    if legacyModifier is not None:
+                        legacyModifier.makeORMTextures(material, tmpFolder, parserOut.verbose)
+
                     for path, usdMaterial in params.usdMaterials.iteritems():
                         surfaceShader = material.getUsdSurfaceShader(usdMaterial, params.usdStage)
-                        copyMaterialTextures(params, material, srcPath, dstPath, tmpFolder)
                         material.updateUsdMaterial(usdMaterial, surfaceShader, params.usdStage)
                 continue
 
@@ -664,17 +707,23 @@ def process(argumentList):
 
             if usdMaterial is not None:
                 # if material does exist remove it
-                usdStage.RemovePrim(usdMaterial.GetPrim().GetPath())
+                matPath = str(usdMaterial.GetPrim().GetPath())
+                if matPath in params.usdMaterials:
+                    del params.usdMaterials[matPath]
+                usdStage.RemovePrim(matPath)
                 usdMaterial = None
 
-            usdMaterial = material.makeUsdMaterial(params.asset)
+            copyMaterialTextures(params, material, srcPath, dstPath, tmpFolder)
+            if legacyModifier is not None:
+                legacyModifier.makeORMTextures(material, tmpFolder, parserOut.verbose)
 
+            usdMaterial = material.makeUsdMaterial(params.asset)
             if usdMaterial is None:
                 continue
 
             surfaceShader = material.getUsdSurfaceShader(usdMaterial, params.usdStage)
-            copyMaterialTextures(params, material, srcPath, dstPath, tmpFolder)
             material.updateUsdMaterial(usdMaterial, surfaceShader, params.usdStage)
+            params.usdMaterials[str(usdMaterial.GetPrim().GetPath())] = usdMaterial
 
     usdStage.GetRootLayer().Export(tmpPath)
 
@@ -692,7 +741,7 @@ def process(argumentList):
         usdUtils.copy(tmpPath, dstPath)
 
     # copy textures with usda and usdc
-    if parserOut.copyTextures and not dstIsUsdz:
+    if copyTextures:
         copyTexturesFromStageToFolder(params, tmpPath, dstFolder)
 
     rmtree(tmpFolder, ignore_errors=True)
@@ -713,9 +762,9 @@ def process(argumentList):
 def tryProcess(argumentList):
     try:
         ret = process(argumentList)
-    except ConvertError:
+    except usdUtils.ConvertError:
         return kConvertErrorReturnValue
-    except ConvertExit:
+    except usdUtils.ConvertExit:
         return 0
     except:
         raise

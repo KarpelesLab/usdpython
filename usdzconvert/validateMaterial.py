@@ -22,7 +22,7 @@ def validateType(property, correctType, shaderPath, verboseOutput):
         return True
     if property.GetTypeName() != correctType:
         if verboseOutput:_Err("\t" + shaderPath + ": " + property.GetFullName() + " type " +
-                              str(property.GetTypeName()) + " is not "+ str(correctType) + ".")
+                              str(property.GetTypeName()) + " is not correct type "+ str(correctType) + ".")
         return False
     return True
 
@@ -66,7 +66,7 @@ def validatePropertyType(shaderPath, property, verboseOutput):
     elif baseName == "normal":
         if not validateType(property, Sdf.ValueTypeNames.Normal3f, shaderPath, verboseOutput):
             return False
-    elif baseName not in ["ior", "metallic", "roughness", "clearcoat", "clearcoatRoughness", "opacity",
+    elif baseName in ["ior", "metallic", "roughness", "clearcoat", "clearcoatRoughness", "opacity",
                           "opacityThreshold", "occlusion", "displacement"]:
         if not validateType(property, Sdf.ValueTypeNames.Float, shaderPath, verboseOutput):
             return False

@@ -13,13 +13,29 @@ The easiest way to start using these command-line tools is to double-click `USD.
 For more details, including demos, see the WWDC 2019 session "Working with USD": 
 https://developer.apple.com/videos/play/wwdc2019/602/
 
-## usdzconvert (version 0.60)
+## usdzconvert (version 0.61)
 
 `usdzconvert` is a Python script that converts obj, gltf, fbx, abc, and usda/usdc/usd assets to usdz.
 It also performs asset validation on the generated usdz.
 For more information, run 
 
     usdzconvert -h
+
+### iOS 12 Compatibility
+
+To export .usdz files that play back correctly on iOS 12, use `usdzconvert`'s  `-iOS12` compatibility switch. When run with `-iOS12`, `usdzconvert` will use the Python Imaging Library (PIL) module to do texture conversion. 
+If your Python environment is missing PIL, you can install it by running:
+
+    pip install pillow
+
+### FBX Support
+
+Note that FBX support in `usdzconvert` requires both Autodesk's FBX SDK and FBX Python bindings to be installed on your system.
+To make FBX bindings available to Python, uncomment the line 
+
+    # export PYTHONPATH=$PYTHONPATH:/Applications/Autodesk/FBX\ Python\ SDK/2019.0/lib/Python27_x86
+
+in `USD.command`, and adjust the path to point to the location of fbx.so (for Python 2.7).
 
 ## usdARKitChecker
 
@@ -32,15 +48,6 @@ Currently `usdARKitChecker` consists of three parts:
 - validation through Pixar's `usdchecker`
 - mesh attribute validation
 - UsdPreviewSurface material validation
-
-### FBX Support
-
-Note that FBX support in `usdzconvert` requires both Autodesk's FBX SDK and FBX Python bindings to be installed on your system.
-To make FBX bindings available to Python, uncomment the line 
-
-    # export PYTHONPATH=$PYTHONPATH:/Applications/Autodesk/FBX\ Python\ SDK/2019.0/lib/Python27_x86
-
-in `USD.command`, and adjust the path to point to the location of fbx.so (for Python 2.7).
 
 ## Precompiled macOS Python Modules for Pixar's USD Library (Version 19.05)
 

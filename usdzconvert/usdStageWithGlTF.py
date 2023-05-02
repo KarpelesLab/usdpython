@@ -238,6 +238,14 @@ def indicesWithTriangleFan(indices):
     return newIndices
 
 
+def getGfVec3fFromData(data, offset):
+    return Gf.Vec3f(float(data[offset]), float(data[offset + 1]), float(data[offset + 2]))
+
+
+def getGfQuatfFromData(data, offset):
+    return Gf.Quatf(float(data[offset + 3]), Gf.Vec3f(float(data[offset]), float(data[offset + 1]), float(data[offset + 2])))
+
+
 class glTFNodeManager(usdUtils.NodeManager):
     def __init__(self, converter):
         usdUtils.NodeManager.__init__(self)
@@ -311,7 +319,7 @@ class Accessor:
 
 
 class glTFConverter:
-    def __init__(self, gltfPath, usdPath, verbose=0):
+    def __init__(self, gltfPath, usdPath, legacyModifier, copyTextures, verbose):
         self.usdStage = None
         self.buffers = []
         self.gltf = None
@@ -319,7 +327,10 @@ class glTFConverter:
         self.usdMaterials = []
         self.usdSkelAnims = []
         self.nodeNames = {} # to avoid duplicate node names
+        self.copyTextures = copyTextures
         self.verbose = verbose
+        self.legacyModifier = legacyModifier # for iOS 12 compatibility
+        self.skeletonByNode = {} # collect skinned mesh to construct later 
         self._worldTransforms = {} # use self.getWorldTransform(nodeIdx)
         self._parents = {} # use self.getParent(nodeIdx)
         self._loadFailed = False
@@ -330,12 +341,14 @@ class glTFConverter:
         filenameFull = usdPath.split('/')[-1]
         self.dstFolder = usdPath[:len(usdPath)-len(filenameFull)]
 
-        self.asset = usdUtils.Asset(usdPath)
+        if self.legacyModifier is not None and self.legacyModifier.getMetersPerUnit() == 0:
+            self.legacyModifier.setMetersPerUnit(1)
+        self.asset = usdUtils.Asset(usdPath, legacyModifier)
 
         try:
             self.load(gltfPath)
         except:
-            print "Error: can't load the input file."
+            usdUtils.printError("can't load the input file.")
             self._loadFailed = True
             return
         if not self.checkGLTFVersion():
@@ -344,8 +357,6 @@ class glTFConverter:
 
         self.nodeManager = glTFNodeManager(self)
         self.skinning = usdUtils.Skinning(self.nodeManager)
-
-        self.postponeUsdMeshToSkeleton = {} # if USD mesh created before UsdSkeleton, bind it later 
 
 
     def load(self, gltfPath):
@@ -366,10 +377,10 @@ class glTFConverter:
         if 'asset' in self.gltf and 'version' in self.gltf['asset']:
             version = self.gltf['asset']['version']
             if float(version) < 2.0 or float(version) >= 3.0:
-                print 'Error: glTF 2.x is supported only. Version of glTF of input file is', version
+                usdUtils.printError('glTF 2.x is supported only. Version of glTF of input file is ' + version)
                 self._loadFailed = True
         else:
-            print "Error: can't detect the version of glTF."
+            usdUtils.printError("can't detect the version of glTF.")
             self._loadFailed = True
         return not self._loadFailed
 
@@ -444,7 +455,8 @@ class glTFConverter:
         sourceIdx = gltfTexture['source']
         image = self.gltf['images'][sourceIdx]
 
-        textureFilename = ''
+        srcTextureFilename = '' # source texture filename on drive
+        textureFilename = '' # valid for USD
         if 'uri' in image:
             uri = image['uri']
             if len(uri) > 5 and uri[:5] == 'data:':
@@ -454,6 +466,7 @@ class glTFConverter:
                         mimeType = uri[5:(offset-1)] if offset > 6 else ''
                         content = base64.b64decode(uri[(offset + 6):])
                         textureFilename = self.saveTexture(content, mimeType, textureIdx)
+                        srcTextureFilename = self.dstFolder + textureFilename
                         break
             else:
                 srcTextureFilename = uri
@@ -461,18 +474,27 @@ class glTFConverter:
                 filenameAndExt = os.path.splitext(textureFilename)
                 ext = filenameAndExt[1].lower()
                 if '.jpeg' == ext:
-                    ext = '.jpg'
-                    filename = filenameAndExt[0]
-                    usdUtils.copy(self.srcFolder + srcTextureFilename, self.dstFolder + filename + ext, self.verbose)
-                    textureFilename = filename + ext
-                elif self.srcFolder != self.dstFolder:
+                    textureFilename = filenameAndExt[0] + '.jpg'
                     usdUtils.copy(self.srcFolder + srcTextureFilename, self.dstFolder + textureFilename, self.verbose)
+                elif self.srcFolder != self.dstFolder:
+                    if self.copyTextures or srcTextureFilename != textureFilename:
+                        usdUtils.copy(self.srcFolder + srcTextureFilename, self.dstFolder + textureFilename, self.verbose)
+                    else:
+                        textureFilename = self.srcFolder + textureFilename
+                srcTextureFilename = self.srcFolder + srcTextureFilename
 
         elif 'mimeType' in image and 'bufferView' in image:
             textureFilename = self.saveTextureWithImage(image, textureIdx)
+            srcTextureFilename = self.dstFolder + textureFilename
 
         if textureFilename == '':
             return False
+
+        if self.legacyModifier is not None and (channels == 'g' or channels == 'b' or channels == 'r'):
+            newTextureFilename = self.legacyModifier.makeOneChannelTexture(srcTextureFilename, self.dstFolder, channels, self.verbose)
+            if newTextureFilename:
+                textureFilename = newTextureFilename
+                channels = 'r'
 
         wrapS = 'repeat' # default for glTF
         wrapT = 'repeat' # default for glTF
@@ -557,7 +579,7 @@ class glTFConverter:
 
             elif 'extensions' in gltfMaterial and 'KHR_materials_pbrSpecularGlossiness' in gltfMaterial['extensions']:
                 if self.verbose:
-                    print "Warning: specular/glossiness workflow is not fully supported."
+                    usdUtils.printWarning("specular/glossiness workflow is not fully supported.")
                 pbrSG = gltfMaterial['extensions']['KHR_materials_pbrSpecularGlossiness']
                 diffuseScale = None
                 opacityScale = None
@@ -606,20 +628,27 @@ class glTFConverter:
                 skin.joints.append(joint)
 
             # get bind matrices
-            bindMatAcc = Accessor(self, gltfSkin['inverseBindMatrices'])
-            m = bindMatAcc.data
-            i = 0
-            for jointIdx in gltfJoints:
-                mat = Gf.Matrix4d(
-                    float(m[i + 0]), float(m[i + 1]), float(m[i + 2]), float(m[i + 3]),
-                    float(m[i + 4]), float(m[i + 5]), float(m[i + 6]), float(m[i + 7]),
-                    float(m[i + 8]), float(m[i + 9]), float(m[i +10]), float(m[i +11]),
-                    float(m[i +12]), float(m[i +13]), float(m[i +14]), float(m[i +15]))
-                skin.bindMatrices[str(jointIdx)] = mat.GetInverse()
-                i += bindMatAcc.components
+            if 'inverseBindMatrices' in gltfSkin:
+                bindMatAcc = Accessor(self, gltfSkin['inverseBindMatrices'])
+                m = bindMatAcc.data
+                i = 0
+                for jointIdx in gltfJoints:
+                    mat = Gf.Matrix4d(
+                        float(m[i + 0]), float(m[i + 1]), float(m[i + 2]), float(m[i + 3]),
+                        float(m[i + 4]), float(m[i + 5]), float(m[i + 6]), float(m[i + 7]),
+                        float(m[i + 8]), float(m[i + 9]), float(m[i +10]), float(m[i +11]),
+                        float(m[i +12]), float(m[i +13]), float(m[i +14]), float(m[i +15]))
+                    skin.bindMatrices[str(jointIdx)] = mat.GetInverse()
+                    i += bindMatAcc.components
+            else:
+                # default identity matrices by spec, which implies that inverse-bind matrices were pre-applied
+                for jointIdx in gltfJoints:
+                    skin.bindMatrices[str(jointIdx)] = Gf.Matrix4d(1)
 
             self.skinning.skins.append(skin)
         self.skinning.createSkeletonsFromSkins()
+        if self.verbose:
+            print "  Found skeletons:", len(self.skinning.skeletons), "with", len(self.skinning.skins), "skin(s)"
 
 
     def findSkeletonForAnimation(self, gltfAnim):
@@ -650,6 +679,65 @@ class glTFConverter:
         self.asset.setFPS(int(1.0 / minTimeInterval))
 
 
+    def getInterpolatedValues(self, interpolation, keyTimesAcc, keyValuesAcc, getValueFromData, timeSet=None):
+        values = {}
+        data = keyValuesAcc.data
+        if interpolation == 'CUBICSPLINE':
+            for el in xrange(keyTimesAcc.count - 1):
+                t0 = self.asset.toTimeCode(keyTimesAcc.data[el], True)
+                t1 = self.asset.toTimeCode(keyTimesAcc.data[el + 1], True)
+
+                smallTimeRange = 0.00001
+                timeRange = t1 - t0
+                if timeRange < smallTimeRange: timeRange = smallTimeRange
+                timeSteps = int(timeRange)
+                if timeSteps == 0: timeSteps = 1
+
+                # math is described in glTF specification
+                offset = el * keyValuesAcc.components * 3 + keyValuesAcc.components
+                p0 = getValueFromData(data, offset)
+                offset = el * keyValuesAcc.components * 3 + keyValuesAcc.components * 2
+                m0 = getValueFromData(data, offset) * timeRange
+                offset = (el + 1) * keyValuesAcc.components * 3
+                m1 = getValueFromData(data, offset) * timeRange
+                offset = (el + 1) * keyValuesAcc.components * 3 + keyValuesAcc.components
+                p1 = getValueFromData(data, offset)
+
+                for timeStep in xrange(timeSteps):
+                    t = float(timeStep) / timeSteps
+                    t2 = t * t
+                    t3 = t2 * t
+                    p = (2*t3 - 3*t2 + 1) * p0 + (t3 - 2*t2 + t) * m0 + (-2*t3 + 3*t2) * p1 + (t3 - t2) * m1
+                    if type(p) is Gf.Quatf:
+                        p = p.GetNormalized()
+                    values[t0 + timeStep] = p
+                    if timeSet is not None:
+                        timeSet.add(t0 + timeStep)
+
+            el = keyTimesAcc.count - 1
+            time = self.asset.toTimeCode(keyTimesAcc.data[el], True)
+            offset = el * keyValuesAcc.components * 3 + keyValuesAcc.components
+            values[time] = getValueFromData(data, offset)
+            if timeSet is not None:
+                timeSet.add(time)
+        else:
+            if interpolation == 'STEP':
+                for el in xrange(1, keyTimesAcc.count):
+                    time = self.asset.toTimeCode(keyTimesAcc.data[el], True) - 1
+                    offset = (el - 1) * keyValuesAcc.components
+                    values[time] = getValueFromData(data, offset)
+                    if timeSet is not None:
+                        timeSet.add(time)
+            for el in xrange(keyTimesAcc.count):
+                time = self.asset.toTimeCode(keyTimesAcc.data[el], True)
+                offset = el * keyValuesAcc.components
+                values[time] = getValueFromData(data, offset)
+                if timeSet is not None:
+                    timeSet.add(time)
+
+        return values
+
+
     def processSkeletonAnimation(self):
         for gltfAnim in self.gltf['animations'] if 'animations' in self.gltf else []:
 
@@ -676,48 +764,40 @@ class glTFConverter:
 
                 if skeleton.getJointIndex(strNodeIdx) == -1:
                     if self.verbose:
-                        print "  Warning: Skeletal animation contains node animation"
+                        usdUtils.printWarning("Skeletal animation contains node animation")
                     continue
 
                 targetPath = gltfTarget['path']
 
                 samplerIdx = gltfChannel['sampler']
                 gltfSampler = gltfAnim['samplers'][samplerIdx]
-                interpolation = gltfSampler['interpolation']
+                interpolation = gltfSampler['interpolation'] if 'interpolation' in gltfSampler else 'LINEAR'
 
                 keyTimesAcc = Accessor(self, gltfSampler['input'])
                 keyValuesAcc = Accessor(self, gltfSampler['output'])
-                v = keyValuesAcc.data
 
                 if strNodeIdx not in animJoints:
                     animJoints[strNodeIdx] = [None] * 3
 
-                values = {}
-
+                pathIdx = -1
+                timeSet = None
                 if targetPath == 'translation':
-                    for el in xrange(keyTimesAcc.count):
-                        time = float(keyTimesAcc.data[el])
-                        translationTimeSet.add(time)
-                        p = el * keyValuesAcc.components
-                        values[time] = Gf.Vec3f(float(v[p]), float(v[p + 1]), float(v[p + 2]))
-                    animJoints[strNodeIdx][0] = values
+                    pathIdx = 0
+                    timeSet = translationTimeSet
                 elif targetPath == 'rotation':
-                    for el in xrange(keyTimesAcc.count):
-                        time = float(keyTimesAcc.data[el])
-                        rotationTimeSet.add(time)
-                        p = el * keyValuesAcc.components
-                        values[time] = Gf.Quatf(float(v[p + 3]), Gf.Vec3f(float(v[p]), float(v[p + 1]), float(v[p + 2])))
-                    animJoints[strNodeIdx][1] = values
+                    pathIdx = 1
+                    timeSet = rotationTimeSet
                 elif targetPath == 'scale':
-                    for el in xrange(keyTimesAcc.count):
-                        time = float(keyTimesAcc.data[el])
-                        scaleTimeSet.add(time)
-                        p = el * keyValuesAcc.components
-                        values[time] = Gf.Vec3f(float(v[p]), float(v[p + 1]), float(v[p + 2]))
-                    animJoints[strNodeIdx][2] = values
+                    pathIdx = 2
+                    timeSet = scaleTimeSet
                 else:
                     if self.verbose:
-                        print "  Warning: Skeletal animation: unsupported target path:", targetPath
+                        usdUtils.printWarning("Skeletal animation: unsupported target path: " + targetPath)
+                    continue
+
+                getValueFromData = getGfQuatfFromData if targetPath == 'rotation' else getGfVec3fFromData
+                values = self.getInterpolatedValues(interpolation, keyTimesAcc, keyValuesAcc, getValueFromData, timeSet)
+                animJoints[strNodeIdx][pathIdx] = values
 
             if len(animJoints) == 0:
                 continue
@@ -736,7 +816,7 @@ class glTFConverter:
 
             # translations attribute
             times = sorted(translationTimeSet)
-            attr = None
+            attr = usdSkelAnim.CreateTranslationsAttr()
             for time in times:
                 values = []
                 for joint in skeleton.joints:
@@ -747,13 +827,17 @@ class glTFConverter:
                         else:
                             values.append(getTransformTranslation(gltfNodes[int(joint)]))
                 if len(values):
-                    if attr is None:
-                        attr = usdSkelAnim.CreateTranslationsAttr()
-                    attr.Set(values, Usd.TimeCode(self.asset.toTimeCode(time, True)))
+                    attr.Set(values, Usd.TimeCode(time))
+            if len(times) == 0: # add default values if no keys
+                values = []
+                for joint in skeleton.joints:
+                    if joint in animJoints:
+                        values.append(Gf.Vec3f(0, 0, 0))
+                attr.Set(values)
 
             # rotations attribute
             times = sorted(rotationTimeSet)
-            attr = None
+            attr = usdSkelAnim.CreateRotationsAttr()
             for time in times:
                 values = []
                 for joint in skeleton.joints:
@@ -764,13 +848,17 @@ class glTFConverter:
                         else:
                             values.append(getTransformRotation(gltfNodes[int(joint)]))
                 if len(values):
-                    if attr is None:
-                        attr = usdSkelAnim.CreateRotationsAttr()
-                    attr.Set(values, Usd.TimeCode(self.asset.toTimeCode(time, True)))
+                    attr.Set(values, Usd.TimeCode(time))
+            if len(times) == 0:
+                values = []
+                for joint in skeleton.joints:
+                    if joint in animJoints:
+                        values.append(Gf.Quatf(1, Gf.Vec3f(0, 0, 0)))
+                attr.Set(values)
 
             # scales attribute
             times = sorted(scaleTimeSet)
-            attr = None
+            attr = usdSkelAnim.CreateScalesAttr()
             for time in times:
                 values = []
                 for joint in skeleton.joints:
@@ -781,9 +869,13 @@ class glTFConverter:
                         else:
                             values.append(getTransformScale(gltfNodes[int(joint)]))
                 if len(values):
-                    if attr is None:
-                        attr = usdSkelAnim.CreateScalesAttr()
-                    attr.Set(values, Usd.TimeCode(self.asset.toTimeCode(time, True)))
+                    attr.Set(values, Usd.TimeCode(time))
+            if len(times) == 0:
+                values = []
+                for joint in skeleton.joints:
+                    if joint in animJoints:
+                        values.append(Gf.Vec3f(1, 1, 1))
+                attr.Set(values)
 
             skeleton.setSkeletalAnimation(usdSkelAnim)
             self.usdSkelAnims.append(usdSkelAnim)
@@ -796,11 +888,11 @@ class glTFConverter:
         if mode == gltfPrimitiveMode.POINTS:
             usdMesh = UsdGeom.Points.Define(self.usdStage, path)
         elif mode == gltfPrimitiveMode.LINES:
-            print 'Warning: LINES as primitive.mode is not supported.'
+            usdUtils.printWarning('LINES as primitive.mode is not supported.')
         elif mode == gltfPrimitiveMode.LINE_LOOP:
-            print 'Warning: LINE_LOOP as primitive.mode is not supported.'
+            usdUtils.printWarning('LINE_LOOP as primitive.mode is not supported.')
         elif mode == gltfPrimitiveMode.LINE_STRIP:
-            print 'Warning: LINE_STRIP as primitive.mode is not supported.'
+            usdUtils.printWarning('LINE_STRIP as primitive.mode is not supported.')
 
         if usdMesh is None:
             usdMesh = UsdGeom.Mesh.Define(self.usdStage, path)
@@ -815,11 +907,13 @@ class glTFConverter:
                 usdSkelBinding.CreateGeomBindTransformAttr(differenceTransform)
                 if skin.skeleton.usdSkeleton is not None:
                     usdSkelBinding.CreateSkeletonRel().AddTarget(skin.skeleton.usdSkeleton.GetPath())
-                else:
-                    self.postponeUsdMeshToSkeleton[usdMesh] = skin
+                    if self.legacyModifier is not None:
+                        self.legacyModifier.addSkelAnimToMesh(usdMesh, skin.skeleton)
         elif skeleton is not None:
             meshNodeWorldMatrix = self.getWorldTransform(nodeIdx)
             skeleton.bindRigidDeformation(str(nodeIdx), usdMesh, meshNodeWorldMatrix)
+            if self.legacyModifier is not None:
+                self.legacyModifier.addSkelAnimToMesh(usdMesh, skeleton)
 
         attributes = gltfPrimitive['attributes']
 
@@ -876,7 +970,7 @@ class glTFConverter:
                     UsdSkel.NormalizeWeights(newData, accessor.components)
                     usdSkelBinding.CreateJointWeightsPrimvar(False, accessor.components).Set(newData)
             else:
-                print "Warning: Unsupported primitive attribute:", key
+                usdUtils.printWarning("Unsupported primitive attribute: " + key)
 
         if (mode == gltfPrimitiveMode.TRIANGLES or 
             mode == gltfPrimitiveMode.TRIANGLE_STRIP or 
@@ -973,26 +1067,32 @@ class glTFConverter:
             pass
         else:
             if 'mesh' in gltfNode:
-                if self.verbose:
-                    if 'skin' in gltfNode:
+                if 'skin' in gltfNode or underSkeleton is not None:
+                    self.skeletonByNode[str(nodeIdx)] = underSkeleton
+                    if self.verbose:
                         print indent + 'Skinned mesh:', name
-                    else:
+                else:
+                    if self.verbose:
                         print indent + 'Mesh:', name
-                usdGeom = self.processMesh(nodeIdx, newPath, underSkeleton)
+                    usdGeom = self.processMesh(nodeIdx, newPath, underSkeleton)
             else:
                 if self.verbose:
                     print indent + 'Node:', name
                 usdGeom = UsdGeom.Xform.Define(self.usdStage, newPath)
 
-            if 'matrix' in gltfNode:
-                usdGeom.AddTransformOp().Set(getMatrix(gltfNode['matrix']))
-            else:
-                if 'translation' in gltfNode:
-                    usdGeom.AddTranslateOp().Set(getVec3(gltfNode['translation']))
-                if 'rotation' in gltfNode:
-                    usdGeom.AddOrientOp().Set(getQuat(gltfNode['rotation']))
-                if 'scale' in gltfNode:
-                    usdGeom.AddScaleOp().Set(getVec3(gltfNode['scale']))
+            if usdGeom is not None:
+                if 'matrix' in gltfNode:
+                    usdGeom.AddTransformOp().Set(getMatrix(gltfNode['matrix']))
+                else:
+                    if 'translation' in gltfNode:
+                        usdGeom.AddTranslateOp().Set(getVec3(gltfNode['translation']))
+                    if 'rotation' in gltfNode:
+                        if self.legacyModifier is None:
+                            usdGeom.AddOrientOp().Set(getQuat(gltfNode['rotation']))
+                        else:
+                            usdGeom.AddRotateXYZOp().Set(self.legacyModifier.eulerWithQuat(getQuat(gltfNode['rotation'])))
+                    if 'scale' in gltfNode:
+                        usdGeom.AddScaleOp().Set(getVec3(gltfNode['scale']))
 
         if usdGeom is not None:
             self.usdGeoms[nodeIdx] = usdGeom
@@ -1020,54 +1120,70 @@ class glTFConverter:
                 if skeleton is not None:
                     continue
 
-                path = gltfTarget['path']
+                targetPath = gltfTarget['path']
 
                 samplerIdx = gltfChannel['sampler']
                 gltfSampler = gltfAnim['samplers'][samplerIdx]
-                interpolation = gltfSampler['interpolation']
-                if interpolation != 'LINEAR':
-                    if self.verbose:
-                        print 'Warnig:', interpolation, 'interpolation for animation is not supported'
-                    continue
-
+                interpolation = gltfSampler['interpolation'] if 'interpolation' in gltfSampler else 'LINEAR'
                 keyTimesAcc = Accessor(self, gltfSampler['input'])
                 keyValuesAcc = Accessor(self, gltfSampler['output'])
-                v = keyValuesAcc.data
+                data = keyValuesAcc.data
+
+                if nodeIdx not in self.usdGeoms:
+                    continue
 
                 usdGeom = self.usdGeoms[nodeIdx]
-                ops = usdGeom.GetOrderedXformOps()
 
-                if path == 'scale':
-                    op = getXformOp(usdGeom, UsdGeom.XformOp.TypeScale)
-                    if op == None:
-                        op = usdGeom.AddScaleOp()
-                    for el in xrange(keyTimesAcc.count):
-                        time = self.asset.toTimeCode(keyTimesAcc.data[el], True)
-                        p = el * keyValuesAcc.components
-                        op.Set(time = time, value = Gf.Vec3f(float(v[p]), float(v[p + 1]), float(v[p + 2])))
-                elif path == 'rotation':
-                    op = getXformOp(usdGeom, UsdGeom.XformOp.TypeOrient)
-                    if op == None:
-                        op = usdGeom.AddOrientOp()
-                    for el in xrange(keyTimesAcc.count):
-                        time = self.asset.toTimeCode(keyTimesAcc.data[el], True)
-                        p = el * keyValuesAcc.components
-                        op.Set(time = time, value = Gf.Quatf(float(v[p + 3]), Gf.Vec3f(float(v[p]), float(v[p + 1]), float(v[p + 2]))))
-                if path == 'translation':
-                    op = getXformOp(usdGeom, UsdGeom.XformOp.TypeTranslate)
-                    if op == None:
-                        op = usdGeom.AddTranslateOp()
-                    for el in xrange(keyTimesAcc.count):
-                        time = self.asset.toTimeCode(keyTimesAcc.data[el], True)
-                        p = el * keyValuesAcc.components
-                        op.Set(time = time, value = Gf.Vec3f(float(v[p]), float(v[p + 1]), float(v[p + 2])))
+                xformOp = None
+                getValueFromData = getGfQuatfFromData if targetPath == 'rotation' else getGfVec3fFromData
+
+                if self.legacyModifier is not None and targetPath == 'rotation':
+                    getValueFromData = self.legacyModifier.getEulerFromData
+
+                if targetPath == 'translation':
+                    xformOp = getXformOp(usdGeom, UsdGeom.XformOp.TypeTranslate)
+                    if xformOp == None:
+                        xformOp = usdGeom.AddTranslateOp()
+                elif targetPath == 'rotation':
+                    if self.legacyModifier is None:
+                        xformOp = getXformOp(usdGeom, UsdGeom.XformOp.TypeOrient)
+                        if xformOp == None:
+                            xformOp = usdGeom.AddOrientOp()
+                    else:
+                        xformOp = getXformOp(usdGeom, UsdGeom.XformOp.TypeRotateXYZ)
+                        if xformOp == None:
+                            xformOp = usdGeom.AddRotateXYZOp()
+                elif targetPath == 'scale':
+                    xformOp = getXformOp(usdGeom, UsdGeom.XformOp.TypeScale)
+                    if xformOp == None:
+                        xformOp = usdGeom.AddScaleOp()
+
+                if xformOp == None:
+                    continue
+
+                values = self.getInterpolatedValues(interpolation, keyTimesAcc, keyValuesAcc, getValueFromData)
+                for time, value in values.iteritems():
+                    xformOp.Set(time = time, value = value)
 
 
-    def bindPostponedSkeletons(self):
-        for usdMesh, skin in self.postponeUsdMeshToSkeleton.iteritems():
-            usdSkelBinding = UsdSkel.BindingAPI(usdMesh)
-            if skin.skeleton.usdSkeleton is not None:
-                usdSkelBinding.CreateSkeletonRel().AddTarget(skin.skeleton.usdSkeleton.GetPath())
+    def processSkinnedMeshes(self):
+        for strNodeIdx, skeleton in self.skeletonByNode.iteritems():
+            nodeIdx = int(strNodeIdx)
+            gltfNode = self.gltf['nodes'][nodeIdx]
+            if skeleton is None and 'skin' in gltfNode:
+                skinIdx = gltfNode['skin']
+                skin = self.skinning.skins[skinIdx]
+                skeleton = skin.skeleton
+
+            name = getName(gltfNode, 'node_', nodeIdx)
+            if name in self.nodeNames:
+                name = name + '_' + str(nodeIdx)
+            self.nodeNames[name] = name
+
+            newPath = skeleton.sdfPath + '/' + name
+            usdGeom = self.processMesh(nodeIdx, newPath, skeleton)
+            if usdGeom is not None:
+                self.usdGeoms[nodeIdx] = usdGeom
 
 
     def makeUsdStage(self):
@@ -1075,20 +1191,21 @@ class glTFConverter:
             return None
         self.usdStage = self.asset.makeUsdStage()
         #gltf units for all linear distance are meters
-        self.usdStage.SetMetadata("metersPerUnit", 1)
+        if self.legacyModifier is None:
+            self.usdStage.SetMetadata("metersPerUnit", 1)
         self.createMaterials()
         self.prepareSkinning()
         self.prepareAnimations()
         self.processNodeChildren(self.gltf['scenes'][0]['nodes'], self.asset.getGeomPath(), None)
-        self.bindPostponedSkeletons()
         self.processSkeletonAnimation()
+        self.processSkinnedMeshes()
         self.processNodeTransformAnimation()
         self.asset.finalize()
         return self.usdStage
 
 
 
-def usdStageWithGlTF(gltfPath, usdPath, verbose=0):
-    converter = glTFConverter(gltfPath, usdPath, verbose)
+def usdStageWithGlTF(gltfPath, usdPath, legacyModifier, copyTextures, verbose):
+    converter = glTFConverter(gltfPath, usdPath, legacyModifier, copyTextures, verbose)
     return converter.makeUsdStage()
 

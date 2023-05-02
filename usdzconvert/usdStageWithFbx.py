@@ -12,7 +12,7 @@ try:
     imp.find_module('fbx')
     import fbx
 except ImportError:
-    print ("Error: Failed to import fbx module. Please install FBX Python bindings from http://www.autodesk.com/fbx and add path to FBX Python SDK to your PYTHONPATH")
+    usdUtils.printError("Failed to import fbx module. Please install FBX Python bindings from http://www.autodesk.com/fbx and add path to FBX Python SDK to your PYTHONPATH")
     usdStageWithFbxLoaded = False
 
 
@@ -21,7 +21,7 @@ class ConvertError(Exception):
 
 
 def printErrorAndExit(message):
-    print 'usdStageWithFbx.py: error:', message
+    usdUtils.printError(message)
     raise ConvertError()
 
 
@@ -78,9 +78,11 @@ class FbxNodeManager(usdUtils.NodeManager):
 
 
 class FbxConverter:
-    def __init__(self, fbxPath, usdPath, verbose=0):
+    def __init__(self, fbxPath, usdPath, legacyModifier, copyTextures, verbose):
         self.verbose = verbose
-        self.asset = usdUtils.Asset(usdPath)
+        self.legacyModifier = legacyModifier
+        self.copyTextures = copyTextures
+        self.asset = usdUtils.Asset(usdPath, legacyModifier)
         self.usdStage = None
         self.usdMaterials = {}
         self.nodeId = 0
@@ -88,7 +90,8 @@ class FbxConverter:
         self.fbxSkinToSkin = {}
         self.startAnimationTime = 0
         self.stopAnimationTime = 0
-        self.skeletonByNode = {} # collect skinned mesh to construct later 
+        self.skeletonByNode = {} # collect skinned mesh to construct later
+        self.copiedTextures = {} # avoid copying textures more then once
 
         self.extent = [[], []]
 
@@ -173,21 +176,39 @@ class FbxConverter:
                     value = float(property.Get()[0])
         factor = float(factorProperty.Get()) if factorProperty is not None else None
 
-        textureFileName = ''
+        srcTextureFilename = '' # source texture filename on drive
+        textureFilename = '' # valid for USD
         materialProperty = fbxMaterial.FindProperty(propertyName)
 
         if materialProperty.IsValid():
-            textureFileName, texCoordSet, wrapS, wrapT = self.getTextureProperties(materialProperty)
-            textureFileName = usdUtils.resolvePath(textureFileName, self.srcFolder)
+            srcTextureFilename, texCoordSet, wrapS, wrapT = self.getTextureProperties(materialProperty)
+            srcTextureFilename = usdUtils.resolvePath(srcTextureFilename, self.srcFolder)
+            textureFilename = usdUtils.makeValidPath(srcTextureFilename)
 
-        if textureFileName != '':
+        if  textureFilename != '' and (self.copyTextures or srcTextureFilename != textureFilename):
+            if srcTextureFilename in self.copiedTextures:
+                textureFilename = self.copiedTextures[srcTextureFilename]
+            else:
+                newTextureFilename = 'textures/' + os.path.basename(textureFilename)
+
+                # do not rewrite the texture with same basename
+                subfolderIdx = 0
+                while newTextureFilename in self.copiedTextures.values():
+                    newTextureFilename = 'textures/' + str(subfolderIdx) + '/' + os.path.basename(textureFilename)
+                    subfolderIdx += 1
+
+                usdUtils.copy(srcTextureFilename, self.dstFolder + newTextureFilename, self.verbose)
+                self.copiedTextures[srcTextureFilename] = newTextureFilename
+                textureFilename = newTextureFilename
+
+        if textureFilename != '':
             scale = None
             if factor is not None:
                 if channels == 'rgb':
                     scale = [factor, factor, factor]
                 else:
                     scale = factor
-            material.inputs[input] = usdUtils.Map(channels, textureFileName, value, texCoordSet, wrapS, wrapT, scale)
+            material.inputs[input] = usdUtils.Map(channels, textureFilename, value, texCoordSet, wrapS, wrapT, scale)
         else:
             if value is not None:
                 material.inputs[input] = value
@@ -216,6 +237,10 @@ class FbxConverter:
             self.processMaterialProperty(usdUtils.InputName.occlusion, fbx.FbxSurfaceMaterial.sAmbient, ambient, ambientFactor, 'r', material, fbxMaterial)
             # 'metallic', 'roughness' ?
             usdMaterial = material.makeUsdMaterial(self.asset)
+
+            if self.legacyModifier is not None:
+                self.legacyModifier.opacityAndDiffuseOneTexture(material)
+
             self.usdMaterials[fbxMaterial.GetName()] = usdMaterial
 
 
@@ -252,105 +277,132 @@ class FbxConverter:
                 self.extent[1][i] = max(self.extent[1][i], extent.GetMax()[i])
 
 
-    def processNormals(self, fbxMesh, usdMesh, vertexIndices):
-        normals = []
-        normalIndices = []
+    def getVec3fArrayWithLayerElements(self, elements, fbxLayerElements):
+        elementsArray = fbxLayerElements.GetDirectArray()
+        for i in xrange(elementsArray.GetCount()):
+            element = elementsArray.GetAt(i)
+            elements.append(Gf.Vec3f(element[0], element[1], element[2]))
 
+
+    def getIndicesWithLayerElements(self, fbxMesh, fbxLayerElements):
+        mappingMode = fbxLayerElements.GetMappingMode()
+        referenceMode = fbxLayerElements.GetReferenceMode()
+        indexToDirect = (
+            referenceMode == fbx.FbxLayerElement.eIndexToDirect or
+            referenceMode == fbx.FbxLayerElement.eIndex)
+
+        indices = []
+        if mappingMode == fbx.FbxLayerElement.eByControlPoint:
+            if indexToDirect:
+                for contorlPointIdx in xrange(fbxMesh.GetControlPointsCount()):
+                    indices.append(fbxLayerElements.GetIndexArray().GetAt(contorlPointIdx))
+        elif mappingMode == fbx.FbxLayerElement.eByPolygonVertex:
+            pointIdx = 0
+            for polygonIdx in xrange(fbxMesh.GetPolygonCount()):
+                for vertexIdx in xrange(fbxMesh.GetPolygonSize(polygonIdx)):
+                    if indexToDirect:
+                        indices.append(fbxLayerElements.GetIndexArray().GetAt(pointIdx))
+                    else:
+                        indices.append(pointIdx)
+                    pointIdx += 1
+        elif mappingMode == fbx.FbxLayerElement.eByPolygon:
+            for polygonIdx in xrange(fbxMesh.GetPolygonCount()):
+                if indexToDirect:
+                    indices.append(fbxLayerElements.GetIndexArray().GetAt(polygonIdx))
+                else:
+                    indices.append(polygonIdx)
+        return indices
+
+
+    def getInterpolationWithLayerElements(self, fbxLayerElements):
+        mappingMode = fbxLayerElements.GetMappingMode()
+        if mappingMode == fbx.FbxLayerElement.eByControlPoint:
+            return UsdGeom.Tokens.vertex
+        elif mappingMode == fbx.FbxLayerElement.eByPolygonVertex:
+            return UsdGeom.Tokens.faceVarying
+        elif mappingMode == fbx.FbxLayerElement.eByPolygon:
+            return UsdGeom.Tokens.uniform
+        elif mappingMode == fbx.FbxLayerElement.eAllSame:
+            return UsdGeom.Tokens.constant
+        elif mappingMode == fbx.FbxLayerElement.eByEdge:
+            usdUtils.printWarning("Mapping mode eByEdge for layer elements is not supported.")
+        return ''
+
+
+    def processNormals(self, fbxMesh, usdMesh, vertexIndices):
         for layerIdx in xrange(fbxMesh.GetLayerCount()):
             fbxLayerNormals = fbxMesh.GetLayer(layerIdx).GetNormals()
-            if not fbxLayerNormals:
+            if fbxLayerNormals is None:
                 continue
 
-            normalsArray = fbxLayerNormals.GetDirectArray()
-            for i in xrange(normalsArray.GetCount()):
-                normal = normalsArray.GetAt(i)
-                normals.append(Gf.Vec3f(normal[0], normal[1], normal[2]))
+            normals = []
+            self.getVec3fArrayWithLayerElements(normals, fbxLayerNormals)
+            if not any(normals):
+                continue
 
-            # indices
-            vertexId = 0
-            for p in xrange(fbxMesh.GetPolygonCount()):
-                for v in xrange(fbxMesh.GetPolygonSize(p)):
-                    if fbxLayerNormals.GetMappingMode() == fbx.FbxLayerElement.eByControlPoint:
-                        controlPointIdx = fbxMesh.GetPolygonVertex(p, v)
-                        if fbxLayerNormals.GetReferenceMode() == fbx.FbxLayerElement.eDirect:
-                            normalIndices.append(controlPointIdx)
-                        elif fbxLayerNormals.GetReferenceMode() == fbx.FbxLayerElement.eIndexToDirect:
-                            index = fbxLayerNormals.GetIndexArray().GetAt(controlPointIdx)
-                            normalIndices.append(index)
-                    elif fbxLayerNormals.GetMappingMode() == fbx.FbxLayerElement.eByPolygonVertex:
-                        if fbxLayerNormals.GetReferenceMode() == fbx.FbxLayerElement.eDirect:
-                            normalIndices.append(vertexId)
-                        elif fbxLayerNormals.GetReferenceMode() == fbx.FbxLayerElement.eIndexToDirect:
-                            index = fbxLayerNormals.GetIndexArray().GetAt(vertexId)
-                            normalIndices.append(index)
-                    elif (fbxLayerNormals.GetMappingMode() == fbx.FbxLayerElement.eByPolygon or
-                          fbxLayerNormals.GetMappingMode() == fbx.FbxLayerElement.eAllSame or
-                          fbxLayerNormals.GetMappingMode() == fbx.FbxLayerElement.eNone):
-                        print("Unsupported mapping mode for normals.")
-                    vertexId += 1
-
-        if any(normals):
-            if len(normalIndices) == 0 or normalIndices == vertexIndices:
-                usdMesh.CreateNormalsAttr(normals)
-            else:
-                normalPrimvar = usdMesh.CreatePrimvar('normals', Sdf.ValueTypeNames.Normal3fArray, UsdGeom.Tokens.faceVarying)
-                normalPrimvar.Set(normals)
-                normalPrimvar.SetIndices(Vt.IntArray(normalIndices))
+            indices = self.getIndicesWithLayerElements(fbxMesh, fbxLayerNormals)
+            interpolation = self.getInterpolationWithLayerElements(fbxLayerNormals)
+            normalPrimvar = usdMesh.CreatePrimvar('normals', Sdf.ValueTypeNames.Normal3fArray, interpolation)
+            normalPrimvar.Set(normals)
+            if len(indices) != 0:
+                normalPrimvar.SetIndices(Vt.IntArray(indices))
+            break # normals can be in one layer only
 
 
     def processUVs(self, fbxMesh, usdMesh, vertexIndices):
         for layerIdx in xrange(fbxMesh.GetLayerCount()):
-            uvs = []
-            uvIndices = []
             fbxLayerUVs = fbxMesh.GetLayer(layerIdx).GetUVs() # get diffuse texture uv-s
-
-            if not fbxLayerUVs or fbxLayerUVs.GetMappingMode() == fbx.FbxLayerElement.eNone:
+            if fbxLayerUVs is None:
                 continue
 
-            if (fbxLayerUVs.GetMappingMode() == fbx.FbxLayerElement.eByPolygon or
-                fbxLayerUVs.GetMappingMode() == fbx.FbxLayerElement.eAllSame):
-                    print("Unsupported mapping mode for UVs.")
-                    continue
-
+            uvs = []
             uvArray = fbxLayerUVs.GetDirectArray()
             for i in xrange(uvArray.GetCount()):
                 uv = uvArray.GetAt(i)
                 uvs.append(Gf.Vec2f(uv[0], uv[1]))
+            if not any(uvs):
+                continue
 
-            uvInterpolationVertex = fbxLayerUVs.GetMappingMode() == fbx.FbxLayerElement.eByControlPoint and fbxLayerUVs.GetReferenceMode() == fbx.FbxLayerElement.eDirect
-            uvInterpolationFace =   fbxLayerUVs.GetMappingMode() == fbx.FbxLayerElement.eByControlPoint and fbxLayerUVs.GetReferenceMode() == fbx.FbxLayerElement.eIndexToDirect
-            uvInterpolationOwn =    fbxLayerUVs.GetMappingMode() == fbx.FbxLayerElement.eByPolygonVertex
+            indices = self.getIndicesWithLayerElements(fbxMesh, fbxLayerUVs)
+            interpolation = self.getInterpolationWithLayerElements(fbxLayerUVs)
 
-            # indices
-            vertexId = 0
-            for p in xrange(fbxMesh.GetPolygonCount()):
-                for v in xrange(fbxMesh.GetPolygonSize(p)):
-                    controlPointIdx = fbxMesh.GetPolygonVertex(p, v)
-                    if uvInterpolationVertex:
-                        uvIndices.append(controlPointIdx)
-                    elif uvInterpolationFace:
-                        uvIndices.append(fbxLayerUVs.GetIndexArray().GetAt(controlPointIdx))
-                    elif uvInterpolationOwn:
-                        uvIndices.append(fbxLayerUVs.GetIndexArray().GetAt(vertexId))
-                    vertexId += 1
-
-            if len(uvs):
-                texCoordSet = 'st'
-                uvSets = fbxMesh.GetLayer(layerIdx).GetUVSets()
-                if len(uvSets) > 0:
-                    fbxLayerElementUV = fbxMesh.GetLayer(layerIdx).GetUVSets()[0]
-                    texCoordSet = str(fbxLayerElementUV.GetName())
-                    if layerIdx == 0 or texCoordSet == '' or texCoordSet == 'default':
-                        texCoordSet = 'st'
-                    else:
-                        texCoordSet = usdUtils.makeValidIdentifier(texCoordSet)
-
-                if len(uvIndices) == 0 or uvIndices == vertexIndices:
-                    usdMesh.CreatePrimvar(texCoordSet, Sdf.ValueTypeNames.Float2Array, UsdGeom.Tokens.vertex).Set(uvs)
+            texCoordSet = 'st'
+            uvSets = fbxMesh.GetLayer(layerIdx).GetUVSets()
+            if len(uvSets) > 0:
+                fbxLayerElementUV = fbxMesh.GetLayer(layerIdx).GetUVSets()[0]
+                texCoordSet = str(fbxLayerElementUV.GetName())
+                if layerIdx == 0 or texCoordSet == '' or texCoordSet == 'default':
+                    texCoordSet = 'st'
                 else:
-                    uvattr = usdMesh.CreatePrimvar(texCoordSet, Sdf.ValueTypeNames.Float2Array, UsdGeom.Tokens.faceVarying)
-                    uvattr.Set(uvs)
-                    uvattr.SetIndices(Vt.IntArray(uvIndices))
+                    texCoordSet = usdUtils.makeValidIdentifier(texCoordSet)
+
+            uvPrimvar = usdMesh.CreatePrimvar(texCoordSet, Sdf.ValueTypeNames.Float2Array, interpolation)
+            uvPrimvar.Set(uvs)
+            if len(indices) != 0:
+                uvPrimvar.SetIndices(Vt.IntArray(indices))
+
+
+    def processVertexColors(self, fbxMesh, usdMesh, vertexIndices):
+        for layerIdx in xrange(fbxMesh.GetLayerCount()):
+            fbxLayerColors = fbxMesh.GetLayer(layerIdx).GetVertexColors()
+            if fbxLayerColors is None:
+                continue
+
+            colors = []
+            colorArray = fbxLayerColors.GetDirectArray()
+            for i in xrange(colorArray.GetCount()):
+                fbxColor = colorArray.GetAt(i)
+                colors.append(Gf.Vec3f(fbxColor.mRed, fbxColor.mGreen, fbxColor.mBlue))
+            if not any(colors):
+                continue
+            
+            indices = self.getIndicesWithLayerElements(fbxMesh, fbxLayerColors)
+            interpolation = self.getInterpolationWithLayerElements(fbxLayerColors)
+            displayColorPrimvar = usdMesh.CreateDisplayColorPrimvar(interpolation)
+            displayColorPrimvar.Set(colors)
+            if len(indices) != 0:
+                displayColorPrimvar.SetIndices(Vt.IntArray(indices))
+            break # vertex colors can be in one layer only
 
 
     def applySkinning(self, fbxNode, fbxSkin, usdMesh, indices):
@@ -405,6 +457,8 @@ class FbxConverter:
 
         usdSkelBinding.CreateGeomBindTransformAttr(bindTransform)
         usdSkelBinding.CreateSkeletonRel().AddTarget(skeleton.usdSkeleton.GetPath())
+        if self.legacyModifier is not None:
+            self.legacyModifier.addSkelAnimToMesh(usdMesh, skeleton)
 
 
     def bindRigidDeformation(self, fbxNode, usdMesh, skeleton):
@@ -412,6 +466,8 @@ class FbxConverter:
         transform = GfMatrix4dWithFbxMatrix(getFbxNodeGeometricTransform(fbxNode)) * meshNodeWorldMatrix
 
         skeleton.bindRigidDeformation(fbxNode, usdMesh, GfMatrix4dWithFbxMatrix(transform))
+        if self.legacyModifier is not None:
+            self.legacyModifier.addSkelAnimToMesh(usdMesh, skeleton)
 
 
     def bindMaterials(self, fbxMesh, usdMesh):
@@ -492,6 +548,7 @@ class FbxConverter:
         self.processControlPoints(fbxMesh, usdMesh)
         self.processNormals(fbxMesh, usdMesh, indices)
         self.processUVs(fbxMesh, usdMesh, indices)
+        self.processVertexColors(fbxMesh, usdMesh, indices)
 
         fbxSkin = self.getFbxSkin(fbxNode)
         if fbxSkin is not None:
@@ -920,18 +977,18 @@ class FbxConverter:
         self.processSkinning()
         self.prepareAnimations()
         self.processNode(self.fbxScene.GetRootNode(), self.asset.getGeomPath(), None, '')
-        self.processSkinnedMeshes()
         self.processSkeletalAnimations()
+        self.processSkinnedMeshes()
         self.asset.finalize()
         return self.usdStage
 
 
-def usdStageWithFbx(fbxPath, usdPath, verbose=0):
+def usdStageWithFbx(fbxPath, usdPath, legacyModifier, copyTextures, verbose):
     if usdStageWithFbxLoaded == False:
         return None
 
     try:
-        fbxConverter = FbxConverter(fbxPath, usdPath, verbose)
+        fbxConverter = FbxConverter(fbxPath, usdPath, legacyModifier, copyTextures, verbose)
         return fbxConverter.makeUsdStage()
     except ConvertError:
         return None

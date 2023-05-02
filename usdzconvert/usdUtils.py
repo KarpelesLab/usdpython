@@ -5,6 +5,21 @@ import math
 from pxr import *
 
 
+class ConvertError(Exception):
+    pass
+
+class ConvertExit(Exception):
+    pass
+
+
+def printError(message):
+    print '  \033[91m' + 'Error:', message + '\033[0m'
+
+
+def printWarning(message):
+    print '  \033[93m' + 'Warning:', message + '\033[0m'
+
+
 def makeValidIdentifier(path):
     if len(path) > 0:
         path = re.sub('[^A-Za-z0-9]', '_', path)
@@ -42,7 +57,7 @@ def copy(srcFile, dstFile, verbose=False):
             os.makedirs(dstFolder)
         copyfile(srcFile, dstFile)
     else:
-        print "Warning: can't find", srcFile
+        printWarning("can't find " + srcFile)
 
 
 def resolvePath(textureFileName, folder):
@@ -75,11 +90,12 @@ class Asset:
     geomFolder = 'Geom'
     animationsFolder = 'Animations'
 
-    def __init__(self, usdPath, usdStage=None):
+    def __init__(self, usdPath, legacyModifier, usdStage=None):
         fileName = os.path.basename(usdPath)
         self.name = fileName[:fileName.find('.')]
         self.name = makeValidIdentifier(self.name)
         self.usdPath = usdPath
+        self.legacyModifier = legacyModifier
         self.usdStage = usdStage
         self.defaultPrim = None
         self.beginTime = float('inf')
@@ -109,6 +125,14 @@ class Asset:
         if not self._geomPath:
             self._geomPath = self.getPath() + '/' + Asset.geomFolder
             self.usdStage.DefinePrim(self._geomPath, 'Scope')
+
+            if self.legacyModifier is not None and self.legacyModifier.getMetersPerUnit() != 0:
+                self._geomPath += '/metersPerUnit'
+                usdGeom = UsdGeom.Xform.Define(self.usdStage, self._geomPath)
+                usdMetersPerUnit = 0.01
+                scale = self.legacyModifier.getMetersPerUnit() / usdMetersPerUnit
+                usdGeom.AddScaleOp().Set(Gf.Vec3f(scale, scale, scale))
+
         return self._geomPath
 
 
@@ -317,8 +341,7 @@ class Material:
                         gfScale[1] = float(map.scale[1])
                         gfScale[2] = float(map.scale[2])
                     else:
-                        print map.scale
-                        print 'Scale value', map.scale, 'for', inputName, 'is incorrect.'
+                        printError('Scale value ' + map.scale + ' for ' + inputName + ' is incorrect.')
                         raise
                 else:
                     gfScale[getIndexByChannel(channels)] = float(map.scale)
@@ -326,7 +349,7 @@ class Material:
 
         fileAndExt = os.path.splitext(map.file)
         if len(fileAndExt) == 1 or (fileAndExt[-1] != '.png' and fileAndExt[-1] != '.jpg'):
-            print 'Warning: texture file', map.file, 'is not .png or .jpg'
+            printWarning('texture file ' + map.file + ' is not .png or .jpg')
 
         textureShader.CreateInput('file', Sdf.ValueTypeNames.Asset).Set(map.file)
         textureShader.CreateInput('st', Sdf.ValueTypeNames.Float2).ConnectToSource(uvReader, 'result')
@@ -351,7 +374,7 @@ class Material:
                     gfFallback[2] = float(map.fallback[2])
                     # do not update alpha channel!
                 else:
-                    print 'Fallback value', map.fallback, 'for', inputName, 'is incorrect.'
+                    printWarning('fallback value ' + map.fallback + ' for ' + inputName + ' is incorrect.')
             else:
                 gfFallback[getIndexByChannel(channels)] = float(map.fallback)
 
@@ -536,7 +559,7 @@ class Skeleton:
             return
 
         if self.usdSkeleton is None:
-            print '  Warnig: Trying to assign Skeletal Animation before USD Skeleton has been created.'
+            printWarning('trying to assign Skeletal Animation before USD Skeleton has been created.')
             return
 
         usdSkelBinding = UsdSkel.BindingAPI(self.usdSkeleton)

@@ -5,6 +5,8 @@ import sys
 import os.path
 import time
 
+import usdUtils
+
 
 __all__ = ['usdStageWithObj', 'makeValidUsdObjectName']
 
@@ -294,6 +296,7 @@ def createMesh(objData, geomPath, group, groupName, stage):
                 usdSubset = UsdShade.MaterialBindingAPI.CreateMaterialBindSubset(bindingAPI, subsetName, Vt.IntArray(subset.faces))
                 UsdShade.MaterialBindingAPI(usdSubset).Bind(objData.usdMaterials[materialIndex])
 
+
 def linesContinuation(fileHandle):
     for line in fileHandle:
         line = line.rstrip('\n')
@@ -305,6 +308,7 @@ def linesContinuation(fileHandle):
             line = thisLine + " "+ nextLine
 
         yield line
+
 
 def parseObjFile(objPath, verbose):
     objData = ObjData(verbose)
@@ -336,30 +340,17 @@ def parseObjFile(objPath, verbose):
     return objData
 
 
-def usdStageWithObj(objPath, usdPath, verbose=0):
+def usdStageWithObj(objPath, usdPath, legacyModifier, verbose=0):
     start = time.time()
     objData = parseObjFile(objPath, verbose)
     if verbose:
         print '  parsing OBJ file:', time.time() - start, 'sec'
 
-    usdStage = Usd.Stage.CreateNew(usdPath)
-    UsdGeom.SetStageUpAxis(usdStage, UsdGeom.Tokens.y)
-
-    fileName = os.path.basename(usdPath)
-    assetName = fileName[:fileName.find('.')]
-    assetName = makeValidUsdObjectName(assetName)
-
-    assetPath = '/' + assetName
-
-    # create root prim
-    rootPrim = usdStage.DefinePrim(assetPath, 'Xform')
-    rootPrim.SetAssetInfoByKey('name', assetName)
-    Usd.ModelAPI(rootPrim).SetKind('component')
-    usdStage.SetDefaultPrim(rootPrim)
+    asset = usdUtils.Asset(usdPath, legacyModifier)
+    usdStage = asset.makeUsdStage()
 
     # create all materials
-    materialsPath = assetPath + '/Materials'
-    usdStage.DefinePrim(materialsPath, 'Scope')
+    materialsPath = asset.getMaterialsPath()
     for material in objData.materials:
         createMaterial(objData, materialsPath, material, usdStage)
 
@@ -367,8 +358,7 @@ def usdStageWithObj(objPath, usdPath, verbose=0):
         return usdStage
 
     # create all meshes
-    geomPath = assetPath + '/Geom'
-    usdStage.DefinePrim(geomPath, 'Scope')
+    geomPath = asset.getGeomPath()
     for groupName, group in objData.groups.iteritems():
         createMesh(objData, geomPath, group, groupName, usdStage)
     if verbose:
