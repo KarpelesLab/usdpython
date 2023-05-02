@@ -10,12 +10,15 @@ This package installs to /Applications/usdpython and contains
 - `usdzaudioimport`, a standalone tool to attach audio files to usdz files
 
 After installation you can relocate the files.
+
+IMPORTANT! This version of USD Python tools uses Python 3.7. You can download and install Python 3.7.9 (recommended) from https://www.python.org/downloads/release/python-379/.
+
 The easiest way to start using these command-line tools is to double-click `USD.command` in the Finder. This will open a Terminal window with all necessary environment variables set.
 
 For more details, including demos, see the WWDC 2019 session "Working with USD": 
 https://developer.apple.com/videos/play/wwdc2019/602/
 
-## usdzconvert (version 0.65)
+## usdzconvert (version 0.66)
 
 `usdzconvert` is a Python script that converts obj, gltf, fbx, abc, and usda/usdc/usd assets to usdz.
 It also performs asset validation on the generated usdz.
@@ -37,7 +40,7 @@ To make FBX bindings available to Python, uncomment the line
 
     export PYTHONPATH=$PYTHONPATH:"/Applications/Autodesk/FBX Python SDK/2020.2.1/lib/Python37_x64"
 
-in `USD.command`, and adjust the path to point to the location of fbx.so (for Python 2.7).
+in `USD.command`, and adjust the path to point to the location of fbx.so (for Python 3.7).
 
 ## usdARKitChecker
 

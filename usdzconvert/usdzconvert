@@ -25,7 +25,7 @@ __all__ = ['convert']
 
 
 class USDParameters:
-    version = 0.65
+    version = 0.66
     materialsPath = '/Materials'
 
     def __init__(self, usdStage, verbose, url, creator, copyright, assetPath):
@@ -41,7 +41,7 @@ class USDParameters:
         self.asset = usdUtils.Asset(assetPath, usdStage)
 
 
-
+# parameters from command line
 class ParserOut:
     def __init__(self):
         self.inFilePath = ''
@@ -56,6 +56,7 @@ class ParserOut:
         self.creator = ''
         self.copyright = ''
         self.metersPerUnit = 0 # set by user
+        self.preferredIblVersion = -1
         self.loop = False
         self.noloop = False
         self.useObjMtl = False
@@ -63,6 +64,7 @@ class ParserOut:
         self.materials.append(material)
 
 
+# in/out parameters for converters
 class OpenParameters:
     def __init__(self):
         self.copyTextures = False
@@ -96,6 +98,7 @@ class Parser:
                    [-copytextures]\n\
                    [-metersPerUnit value]\n\
                    [-useObjMtl]\n\
+                   [-preferredIblVersion value]\n\
                    [-loop]\n\
                    [-no-loop]\n\
                    [-iOS12]\n\
@@ -106,7 +109,7 @@ class Parser:
                    [-diffuseColor           r,g,b]\n\
                    [-diffuseColor           <file> fr,fg,fb]\n\
                    [-normal                 x,y,z]\n\
-                   [-normal                 <file> fx,fy,fz\n\
+                   [-normal                 <file> fx,fy,fz]\n\
                    [-emissiveColor          r,g,b]\n\
                    [-emissiveColor          <file> fr,fb,fg]\n\
                    [-metallic               c]\n\
@@ -303,6 +306,11 @@ class Parser:
                     if not isFloat(metersPerUnit) or float(metersPerUnit) <= 0:
                         self.printErrorUsageAndExit('expected positive float value for argument ' + argument)
                     self.out.metersPerUnit = float(metersPerUnit)
+                elif '-preferredIblVersion' == argument or '--preferredIblVersion' == argument or '--preferrediblversion' == argument:
+                    preferredIblVersion = self.getParameters(1, argument)
+                    if not isFloat(preferredIblVersion) or float(preferredIblVersion) < 0 or 2 < float(preferredIblVersion):
+                        self.printErrorUsageAndExit('expected positive integer value [0, 1, 2] for argument ' + argument)
+                    self.out.preferredIblVersion = int(float(preferredIblVersion))
                 elif '-m' == argument:
                     name = self.getParameters(1, argument)
                     material = usdUtils.Material(name)
@@ -676,6 +684,13 @@ def process(argumentList):
 
     if parserOut.noloop:
         usdStage.SetMetadataByDictKey("customLayerData", "loopStartToEndTimeCode", False)
+
+    if parserOut.preferredIblVersion != -1:
+        appleDict = usdStage.GetMetadataByDictKey("customLayerData", "Apple")
+        if appleDict is None or type(appleDict) is not dict:
+            appleDict = {}
+        appleDict["preferredIblVersion"] = parserOut.preferredIblVersion
+        usdStage.SetMetadataByDictKey("customLayerData", "Apple", appleDict)
 
     rootPrim = None
     if usdStage.HasDefaultPrim():
