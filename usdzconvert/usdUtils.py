@@ -85,6 +85,21 @@ def resolvePath(textureFileName, folder):
 
 
 
+class WrapMode:
+    black = 'black'
+    clamp = 'clamp'
+    repeat = 'repeat'
+    mirror = 'mirror'
+    useMetadata = 'useMetadata'
+
+
+def isWrapModeCorrect(mode):
+    modes = [WrapMode.black, WrapMode.clamp, WrapMode.repeat, WrapMode.mirror, WrapMode.useMetadata]
+    if mode in modes:
+        return True
+    return False
+
+
 class Asset:
     materialsFolder = 'Materials'
     geomFolder = 'Geom'
@@ -208,7 +223,7 @@ class Input:
 
 
 class Map:
-    def __init__(self, channels, file, fallback=None, texCoordSet='st', wrapS='repeat', wrapT='repeat', scale = None):
+    def __init__(self, channels, file, fallback=None, texCoordSet='st', wrapS=WrapMode.useMetadata, wrapT=WrapMode.useMetadata, scale = None):
         self.file = file
         self.channels = channels
         self.fallback = fallback
@@ -360,8 +375,10 @@ class Material:
         textureShader.CreateOutput(channels, dataType)
 
         # wrapping mode
-        textureShader.CreateInput('wrapS', Sdf.ValueTypeNames.Token).Set(map.wrapS)
-        textureShader.CreateInput('wrapT', Sdf.ValueTypeNames.Token).Set(map.wrapT)
+        if map.wrapS != WrapMode.useMetadata:
+            textureShader.CreateInput('wrapS', Sdf.ValueTypeNames.Token).Set(map.wrapS)
+        if map.wrapT != WrapMode.useMetadata:
+            textureShader.CreateInput('wrapT', Sdf.ValueTypeNames.Token).Set(map.wrapT)
 
         # fallback value is used if loading of the texture file is failed
         if map.fallback != None:

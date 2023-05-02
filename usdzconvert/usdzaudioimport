@@ -1,0 +1,336 @@
+#!/usr/bin/python
+
+# add audio file to usdz:
+# usdzaudioimport input.usdz output.usdz --audio <sdf_path> <audio_file>
+
+import zipfile
+import os, shutil, sys
+import re
+from pxr import *
+
+
+scriptName = "usdzaudioimport"
+scriptVersion = 0.01
+
+
+def printError(message):
+    print '  \033[91m' + 'Error:', message + '\033[0m'
+
+
+def printWarning(message):
+    print '  \033[93m' + 'Warning:', message + '\033[0m'
+
+
+def makeValidPath(path):
+    if len(path) > 0:
+        path = re.sub('[^A-Za-z0-9/.]', '_', path)
+        if path[0].isdigit():
+            path = '_' + path
+    return path
+
+
+
+class Audio:
+    def __init__(self, path, file):
+        self.path = makeValidPath(path)
+        self.file = file
+
+        self.auralMode = None
+        self.playbackMode  = None
+        self.startTime = None
+        self.endTime = None
+        self.mediaOffset  = None
+        self.gain = None
+
+
+
+def isFloat(value):
+    try:
+        val = float(value)
+        return True
+    except ValueError:
+        return False
+
+
+
+class ParserOut:
+    def __init__(self):
+        self.inFilePath = ''
+        self.outFilePath = ''
+        self.verbose = False
+        self.audios = []
+
+
+
+class Parser:
+    def __init__(self):
+        self.out = ParserOut()
+        self.arguments = []
+        self.argumentIndex = 0
+
+
+    def printConvertNameAndVersion(self):
+        print scriptName, scriptVersion
+
+
+
+    def printUsage(self):
+        self.printConvertNameAndVersion()
+        print 'usage: usdzaudioimport inputFile [outputFile]\n\
+                   [-h] [-v]\n\
+                   [-a sdfPath audioFile] [--audio sdfPath audioFile]\n\
+                   [-auralMode mode]\n\
+                   [-playbackMode mode]\n\
+                   [-startTime value]\n\
+                   [-endTime value]\n\
+                   [-mediaOffset value]\n\
+                   [-gain value]'
+
+
+    def printHelpAndExit(self):
+        self.printUsage()
+        print '\n\
+Adds audio files to usdz files and creates SpatialAudio nodes.\n\
+\npositional argument:\n\
+  inputFile             Input usdz file.\n\
+\noptional arguments:\n\
+  outputFile            Output .usd/usda/usdc/usdz files.\n\
+  -h, --help            Show this help message and exit.\n\
+  -v                    Verbose output.\n\
+  -a sdfPath audioFile\n\
+  --audio sdfPath audioFile\n\
+                        Create new SpatialAudio node with usd path and audio file path\n\
+  -auralMode mode       How audio should be played\n\
+                        mode can be: spatial or nonSpatial\n\
+  -playbackMode mode    Playback mode\n\
+                        mode can be: onceFromStart, onceFromStartToEnd, loopFromStart, loopFromStartToEnd, or loopFromStage\n\
+  -startTime value      Start time for audio in time codes\n\
+  -endTime value        End time for audio in time codes\n\
+  -mediaOffset value    Media offset in seconds\n\
+  -gain value           Multiplier on the incoming audio signal\n\
+\n\
+examples:\n\
+    usdzaudioimport input.usdz output.usdz --audio /AssetName/Sounds/Sound1 love.mp3 -auralMode nonSpatial\n\
+\n\
+    usdzaudioimport input.usdz output.usdz -a /AssetName/Sounds/Sound1 love.mp3 -auralMode nonSpatial -a /AssetName/Sounds/Sound2 /tmp/hate.mp3 -playbackMode onceFromStart\n\
+'
+
+        exit(0)
+
+
+    def printErrorUsageAndExit(self, message):
+        self.printConvertNameAndVersion()
+        printError(message)
+        print 'For more information, run "' + scriptName + ' -h"'
+        exit(1)
+
+
+    def getParameters(self, count, argument):
+        if self.argumentIndex + count >= len(self.arguments):
+            self.printErrorUsageAndExit('argument ' + argument + ' needs more parameters')
+
+        self.argumentIndex += count
+        if count == 1:
+            parameter = self.arguments[self.argumentIndex]
+            if parameter[0] == '-' and not isFloat(parameter):
+                self.printErrorUsageAndExit('unexpected parameter ' + parameter + ' for argument ' + argument)
+            return self.arguments[self.argumentIndex]
+        else:
+            parameters = self.arguments[(self.argumentIndex - count + 1):(self.argumentIndex + 1)]
+            for parameter in parameters:
+                if parameter[0] == '-' and not isFloat(parameter):
+                    self.printErrorUsageAndExit('unexpected parameter ' + parameter + ' for argument ' + argument)
+            return parameters
+
+
+    def parse(self, arguments):
+        self.arguments = []
+        for arg in arguments:
+            if arg.find(',') != -1:
+                newargs = filter(None, arg.replace(',',' ').split(' '))
+                for newarg in newargs:
+                    self.arguments.append(newarg)
+            else:
+                self.arguments.append(arg)
+        
+        if len(arguments) == 0:
+            self.printUsage()
+            print 'For more information, run "' + scriptName + ' -h"'
+            exit(1)
+
+        while self.argumentIndex < len(self.arguments):
+            argument = self.arguments[self.argumentIndex]
+            if not argument:
+                continue
+            if '-' == argument[0]:
+                # parse optional arguments
+                if '-v' == argument:
+                    self.out.verbose = True
+                elif '-a' == argument or '--audio' == argument:
+                    (audioPath, audioFile) = self.getParameters(2, argument)
+                    audio = Audio(audioPath, audioFile)
+                    self.out.audios.append(audio)
+                elif '-auralMode' == argument:
+                    possibleValues = ['spatial', 'notSpatial']
+                    auralMode = self.getParameters(1, argument)
+                    if auralMode not in possibleValues:
+                        self.printErrorUsageAndExit("Incorrect value '" + auralMode + "' for argument " + argument + ", should be from " + str(possibleValues))
+                    if len(self.out.audios) > 0:
+                        self.out.audios[-1].auralMode = auralMode
+                elif '-playbackMode' == argument:
+                    possibleValues = ['onceFromStart', 'onceFromStartToEnd', 'loopFromStart', 'loopFromStartToEnd', 'loopFromStage']
+                    playbackMode = self.getParameters(1, argument)
+                    if playbackMode not in possibleValues:
+                        self.printErrorUsageAndExit("Incorrect value '" + playbackMode + "' for argument " + argument + ", should be from " + str(possibleValues))
+                    if len(self.out.audios) > 0:
+                        self.out.audios[-1].playbackMode = playbackMode
+                elif '-startTime' == argument:
+                    startTime = self.getParameters(1, argument)
+                    if not isFloat(startTime):
+                        self.printErrorUsageAndExit('expected float value for argument ' + argument)
+                    if len(self.out.audios) > 0:
+                        self.out.audios[-1].startTime = float(startTime)
+                elif '-endTime' == argument:
+                    endTime = self.getParameters(1, argument)
+                    if not isFloat(endTime):
+                        self.printErrorUsageAndExit('expected float value for argument ' + argument)
+                    if len(self.out.audios) > 0:
+                        self.out.audios[-1].endTime = float(endTime)
+                elif '-mediaOffset' == argument:
+                    mediaOffset = self.getParameters(1, argument)
+                    if not isFloat(mediaOffset):
+                        self.printErrorUsageAndExit('expected float value for argument ' + argument)
+                    if len(self.out.audios) > 0:
+                        self.out.audios[-1].mediaOffset = float(mediaOffset)
+                elif '-gain' == argument:
+                    gain = self.getParameters(1, argument)
+                    if not isFloat(gain):
+                        self.printErrorUsageAndExit('expected float value for argument ' + argument)
+                    if len(self.out.audios) > 0:
+                        self.out.audios[-1].gain = float(gain)
+                elif '-h' == argument or '--help' == argument:
+                    self.printHelpAndExit()
+                else:
+                    self.printErrorUsageAndExit('unknown argument ' + argument)
+            else:
+                # parse input/output filenames
+                if self.out.inFilePath == '':
+                    self.out.inFilePath = argument
+                elif self.out.outFilePath == '':
+                    self.out.outFilePath = argument
+                else:
+                    print 'Input file:', self.out.inFilePath
+                    print 'Output file:', self.out.outFilePath
+                    self.printErrorUsageAndExit('unknown argument ' + argument)
+
+            self.argumentIndex += 1
+
+        if self.out.inFilePath == '':
+            self.printErrorUsageAndExit('too few arguments')
+
+        return self.out
+
+
+
+def unzip(filePath, outputFolder):
+    # unzip to folder/fileName
+    foldePath, file = os.path.split(filePath)
+    fileName = file.split(".")[0]
+    outputDir = os.path.join(outputFolder, fileName)
+    if not os.path.exists(outputDir):
+        os.makedirs(outputDir)
+    else:
+        # clear existing folder
+        shutil.rmtree(outputDir)
+        os.makedirs(outputDir)
+
+    with zipfile.ZipFile(filePath) as zf:
+        zf.extractall(outputDir)
+
+    return outputDir
+
+
+def gatherAllUSDCFiles(inputDir):
+    usdcs = []
+    for root, dirnames, filenames in os.walk(inputDir):
+        for filename in filenames:
+            # usdz_convert only allows usdc files in usdz archive
+            if filename.endswith(".usdc") or filename.endswith(".USDC"):
+                usdcs.append(os.path.join(root, filename))
+
+    return usdcs
+
+
+
+parser = Parser()
+parserOut = parser.parse(sys.argv[1:])
+
+if not os.path.exists(parserOut.inFilePath):
+    parser.printErrorUsageAndExit("file '" + parserOut.inFilePath + "' does not exist.")
+
+fileAndExt = os.path.splitext(parserOut.inFilePath)
+if len(fileAndExt) != 2:
+    parser.printErrorUsageAndExit('input file ' + parserOut.inFilePath + ' has unsupported file extension.')
+
+print 'Input file:', parserOut.inFilePath
+srcExt = fileAndExt[1].lower()
+if srcExt != '.usdz':
+    parser.printErrorUsageAndExit('input file ' + parserOut.inFilePath + ' is not an usdz file.')
+
+if parserOut.outFilePath == '':
+    parserOut.outFilePath = parserOut.inFilePath
+print 'Output file:', parserOut.outFilePath
+
+
+fileAndExt = os.path.splitext(parserOut.outFilePath)
+dstExt = fileAndExt[1].lower()
+
+
+tmpFolder = "/tmp/usdzupdate"
+tempDir = unzip(parserOut.inFilePath, tmpFolder)
+usds = gatherAllUSDCFiles(tempDir)
+usdFile = usds[0]
+
+usdStage = Usd.Stage.Open(usdFile)
+
+stageStartTimeCode = usdStage.GetStartTimeCode()
+stageEndTimeCode = usdStage.GetEndTimeCode()
+
+
+for audio in parserOut.audios:
+    if parserOut.verbose:
+        print '  Add SpatialAudio ' + audio.path
+
+    usdAudio = UsdMedia.SpatialAudio.Define(usdStage, audio.path)
+
+    usdAudio.CreateFilePathAttr(audio.file)
+
+    if audio.auralMode is not None:
+        usdAudio.CreateAuralModeAttr(audio.auralMode)
+    if audio.playbackMode is not None:
+        usdAudio.CreatePlaybackModeAttr(audio.playbackMode)
+    if audio.startTime is not None:
+        usdAudio.CreateStartTimeAttr(audio.startTime)
+        if stageStartTimeCode > audio.startTime:
+            printWarning("startTime for audio (" + str(audio.startTime) + ") is before than stage start time (" + str(stageStartTimeCode) + ")")
+    if audio.endTime is not None:
+        usdAudio.CreateEndTimeAttr(audio.endTime)
+        if stageEndTimeCode != 0 and stageEndTimeCode < audio.endTime:
+            printWarning("endTime for audio (" + str(audio.endTime) + ") is later than stage end time (" + str(stageEndTimeCode) + ")")
+    if audio.mediaOffset is not None:
+        usdAudio.CreateMediaOffsetAttr(audio.mediaOffset)
+    if audio.gain is not None:
+        usdAudio.CreateGainAttr(audio.gain)
+
+
+outputDir = os.path.dirname(parserOut.outFilePath)
+if not os.path.exists(outputDir):
+    os.makedirs(outputDir)
+
+if dstExt == '.usdz':
+    UsdUtils.CreateNewARKitUsdzPackage(usds[0], parserOut.outFilePath)
+else:
+    usdStage.GetRootLayer().Export(parserOut.outFilePath)
+
+shutil.rmtree(tmpFolder, ignore_errors=True)
+

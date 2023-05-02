@@ -21,7 +21,7 @@ __all__ = ['convert']
 
 
 class USDParameters:
-    version = 0.62
+    version = 0.63
     materialsPath = '/Materials'
 
     def __init__(self, usdStage, verbose, url, copyright, assetPath):
@@ -62,6 +62,8 @@ class Parser:
         self.arguments = []
         self.argumentIndex = 0
         self.texCoordSet = 'st'
+        self.wrapS = usdUtils.WrapMode.useMetadata
+        self.wrapT = usdUtils.WrapMode.useMetadata
 
 
     def printConvertNameAndVersion(self):
@@ -80,7 +82,10 @@ class Parser:
                    [-loop]\n\
                    [-no-loop]\n\
                    [-iOS12]\n\
-                   [-m materialName]        [-texCoordSet name]\n\
+                   [-m materialName]\n\
+                   [-texCoordSet name]\n\
+                   [-wrapS mode]\n\
+                   [-wrapT mode]\n\
                    [-diffuseColor           r,g,b]\n\
                    [-diffuseColor           <file> fr,fg,fb]\n\
                    [-normal                 x,y,z]\n\
@@ -125,6 +130,10 @@ Converts 3D model file to usd/usda/usdc/usdz.\n\
   -iOS12                Make output file compatible with iOS 12 frameworks\n\
   -texCoordSet name     The name of the texture coordinates to use for current\n\
                         material. Default texture coordinate set is "st".\n\
+  -wrapS mode           Texture wrap mode for texture S-coordinate.\n\
+                        mode can be: black, clamp, repeat, mirror, or useMetadata (default)\n\
+  -wrapT mode           Texture wrap mode for texture T-coordinate.\n\
+                        mode can be: black, clamp, repeat, mirror, or useMetadata (default)\n\
                         \n\
   -diffuseColor r,g,b   Set diffuseColor to constant color r,g,b with values in\n\
                         the range [0 .. 1]\n\
@@ -306,7 +315,7 @@ examples:\n\
             index = usdUtils.Input.names.index(inputName)
             channels = usdUtils.Input.channels[index]
 
-        self.out.materials[-1].inputs[inputName] = usdUtils.Map(channels, filename, fallback, self.texCoordSet)
+        self.out.materials[-1].inputs[inputName] = usdUtils.Map(channels, filename, fallback, self.texCoordSet, self.wrapS, self.wrapT)
         return Ok
 
 
@@ -355,6 +364,14 @@ examples:\n\
                     self.texCoordSet = 'st' # drop to default
                 elif '-texCoordSet' == argument:
                     self.texCoordSet = self.getParameters(1, argument)
+                elif '-wraps' == argument.lower():
+                    self.wrapS = self.getParameters(1, argument)
+                    if not usdUtils.isWrapModeCorrect(self.wrapS):
+                        self.printErrorUsageAndExit('wrap mode \'' + self.wrapS + '\' is incorrect for ' + argument)
+                elif '-wrapt' == argument.lower():
+                    self.wrapT = self.getParameters(1, argument)
+                    if not usdUtils.isWrapModeCorrect(self.wrapT):
+                        self.printErrorUsageAndExit('wrap mode \'' + self.wrapT + '\' is incorrect for ' + argument)
                 elif '-loop' == argument or '--loop' == argument:
                     self.out.loop = True
                 elif '-no-loop' == argument or '--no-loop' == argument:

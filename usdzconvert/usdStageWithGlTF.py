@@ -63,9 +63,9 @@ class glTFWrappingMode:
 
     def usdMode(self):
         return {
-            glTFWrappingMode.CLAMP_TO_EDGE: 'clamp',
-            glTFWrappingMode.MIRRORED_REPEAT: 'mirror',
-            glTFWrappingMode.REPEAT: 'repeat'
+            glTFWrappingMode.CLAMP_TO_EDGE: usdUtils.WrapMode.clamp,
+            glTFWrappingMode.MIRRORED_REPEAT: usdUtils.WrapMode.mirror,
+            glTFWrappingMode.REPEAT: usdUtils.WrapMode.repeat
             } [self.mode]
 
 
@@ -507,8 +507,8 @@ class glTFConverter:
                 textureFilename = newTextureFilename
                 channels = 'r'
 
-        wrapS = 'repeat' # default for glTF
-        wrapT = 'repeat' # default for glTF
+        wrapS = usdUtils.WrapMode.repeat # default for glTF
+        wrapT = usdUtils.WrapMode.repeat # default for glTF
 
         # Wrapping mode
         if 'sampler' in gltfTexture:

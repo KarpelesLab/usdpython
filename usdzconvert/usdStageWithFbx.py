@@ -152,29 +152,33 @@ class FbxConverter:
                     texCoordSet = 'st'
                 else:
                     texCoordSet = usdUtils.makeValidIdentifier(texCoordSet)
-            wrapS = 'repeat'
-            wrapT = 'repeat'
+            wrapS = usdUtils.WrapMode.repeat
+            wrapT = usdUtils.WrapMode.repeat
             if fbxFileTexture.GetWrapModeU() == fbx.FbxTexture.eClamp:
-                wrapS = 'clamp'
+                wrapS = usdUtils.WrapMode.clamp
             if fbxFileTexture.GetWrapModeV() == fbx.FbxTexture.eClamp:
-                wrapT = 'clamp'
+                wrapT = usdUtils.WrapMode.clamp
             return fbxFileTexture.GetFileName(), texCoordSet, wrapS, wrapT
         elif materialProperty.GetSrcObjectCount(fbx.FbxCriteria.ObjectType(fbx.FbxLayeredTexture.ClassId)) > 0:
             pass
-        return '', 'st', 'repeat', 'repeat'
+        return '', 'st', usdUtils.WrapMode.repeat, usdUtils.WrapMode.repeat
 
 
     def processMaterialProperty(self, input, propertyName, property, factorProperty, channels, material, fbxMaterial):
         value = None
+        factor = float(factorProperty.Get()) if factorProperty is not None else None
         if property is not None:
             if channels == 'rgb':
                 value = [property.Get()[0], property.Get()[1], property.Get()[2]]
             else:
                 if input == usdUtils.InputName.opacity:
-                    value = 1.0 - property.Get()[0]
+                    transparency = property.Get()[0]
+                    if factor is not None:
+                        transparency = transparency * factor
+                        factor = None
+                    value = 1.0 - transparency
                 else:
                     value = float(property.Get()[0])
-        factor = float(factorProperty.Get()) if factorProperty is not None else None
 
         srcTextureFilename = '' # source texture filename on drive
         textureFilename = '' # valid for USD
@@ -211,7 +215,13 @@ class FbxConverter:
             material.inputs[input] = usdUtils.Map(channels, textureFilename, value, texCoordSet, wrapS, wrapT, scale)
         else:
             if value is not None:
-                material.inputs[input] = value
+                if factor is not None:
+                    if channels == 'rgb':
+                        material.inputs[input] = [value[0] * factor, value[1] * factor, value[2] * factor]
+                    else:
+                        material.inputs[input] = value * factor
+                else:
+                    material.inputs[input] = value
 
 
     def processMaterials(self):
@@ -446,14 +456,28 @@ class FbxConverter:
         usdSkelBinding.CreateJointIndicesPrimvar(False, components).Set(jointIndices)
         usdSkelBinding.CreateJointWeightsPrimvar(False, components).Set(weights)
 
+        bindTransformWasNotFound = True
         bindTransform = Gf.Matrix4d(1)
-        if fbxSkin.GetClusterCount() > 0:
+        for i in range(self.fbxScene.GetPoseCount()):
+            fbxPose = self.fbxScene.GetPose(i)
+            if fbxPose is None:
+                continue
+            nodeIndex = fbxPose.Find(fbxNode)
+            if nodeIndex > -1 and (fbxPose.IsBindPose() or not fbxPose.IsLocalMatrix(nodeIndex)):
+                bindTransform = GfMatrix4dWithFbxMatrix(fbxPose.GetMatrix(nodeIndex))
+                bindTransformWasNotFound = False
+                break
+
+        if bindTransformWasNotFound and fbxSkin.GetClusterCount() > 0:
+            if self.verbose:
+                usdUtils.printWarning("can't find a bind pose for mesh " + fbxNode.GetName() + ". Trying to calculate.")
             # FBX stores bind transform matrix for the skin in each cluster
             # get it from the first one
             fbxCluster = fbxSkin.GetCluster(0)
             fbxBindTransform = fbx.FbxAMatrix()
             fbxBindTransform = fbxCluster.GetTransformMatrix(fbxBindTransform)
             bindTransform = GfMatrix4dWithFbxMatrix(fbxBindTransform)
+            bindTransform = GfMatrix4dWithFbxMatrix(getFbxNodeGeometricTransform(fbxNode)) * bindTransform
 
         usdSkelBinding.CreateGeomBindTransformAttr(bindTransform)
         usdSkelBinding.CreateSkeletonRel().AddTarget(skeleton.usdSkeleton.GetPath())
@@ -462,10 +486,10 @@ class FbxConverter:
 
 
     def bindRigidDeformation(self, fbxNode, usdMesh, skeleton):
-        meshNodeWorldMatrix = GfMatrix4dWithFbxMatrix(fbxNode.EvaluateGlobalTransform())
-        transform = GfMatrix4dWithFbxMatrix(getFbxNodeGeometricTransform(fbxNode)) * meshNodeWorldMatrix
+        bindTransform = GfMatrix4dWithFbxMatrix(fbxNode.EvaluateGlobalTransform())
+        bindTransform = GfMatrix4dWithFbxMatrix(getFbxNodeGeometricTransform(fbxNode)) * bindTransform
 
-        skeleton.bindRigidDeformation(fbxNode, usdMesh, GfMatrix4dWithFbxMatrix(transform))
+        skeleton.bindRigidDeformation(fbxNode, usdMesh, GfMatrix4dWithFbxMatrix(bindTransform))
         if self.legacyModifier is not None:
             self.legacyModifier.addSkelAnimToMesh(usdMesh, skeleton)
 

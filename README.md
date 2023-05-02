@@ -6,14 +6,15 @@ This archive contains
 - precompiled macOS Python modules for Pixar's USD library
 - a set of sample scripts that demonstrate how to write usd files
 - the `fixOpacity` tool
-- usdzcreateassetlib, a standalone tool to generate an asset library from multiple assets
+- `usdzcreateassetlib`, a standalone tool to generate an asset library from multiple assets
+- `usdzaudioimport`, a standalone tool to attach audio files to usdz files
 
 The easiest way to start using these command-line tools is to double-click `USD.command` in the Finder. This will open a Terminal window with all necessary environment variables set.
 
 For more details, including demos, see the WWDC 2019 session "Working with USD": 
 https://developer.apple.com/videos/play/wwdc2019/602/
 
-## usdzconvert (version 0.62)
+## usdzconvert (version 0.63)
 
 `usdzconvert` is a Python script that converts obj, gltf, fbx, abc, and usda/usdc/usd assets to usdz.
 It also performs asset validation on the generated usdz.
@@ -49,7 +50,7 @@ Currently `usdARKitChecker` consists of three parts:
 - mesh attribute validation
 - UsdPreviewSurface material validation
 
-## Precompiled macOS Python Modules for Pixar's USD Library (Version 19.05)
+## Precompiled macOS Python Modules for Pixar's USD Library (Version 19.11)
 
 This library was compiled using version 19.05 of [the public USD GitHub repository](http://openusd.org) with the following build script arguments (see USDPython/README.md for further details):
 
@@ -98,4 +99,11 @@ If you converted your usdz asset with Xcode's usdz_converter, and it has translu
 
 usdzcreateassetlib is a script that generates a single-file asset library from multiple usdz assets. The result is a nested usdz file that contains the source usdz assets and references them in a variant set.
 This script does not depend on the USD library, which should make it easy to deploy on servers.
+
+## usdzaudioimport
+
+usdzaudioimport is a script to attach sound/audio files into existing a usdz file. With this tool users can create SpatialAudio nodes in usdz file and specify parameters for it. For more information, run:
+
+    usdzaudioimport -h
+
 
