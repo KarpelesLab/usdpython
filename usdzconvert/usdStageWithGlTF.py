@@ -1139,7 +1139,7 @@ class glTFConverter:
                     if count == 0: # no indices
                         count = accessor.count
             elif key == 'NORMAL':
-                normalPrimvar = usdGeom.CreatePrimvar('normals', Sdf.ValueTypeNames.Normal3fArray, UsdGeom.Tokens.vertex)
+                normalPrimvar = UsdGeom.PrimvarsAPI(usdGeom).CreatePrimvar('normals', Sdf.ValueTypeNames.Normal3fArray, UsdGeom.Tokens.vertex)
                 normalPrimvar.Set(accessor.data)
             elif key == 'TANGENT':
                 pass
@@ -1157,7 +1157,7 @@ class glTFConverter:
 
                 texCoordSet = key[9:]
                 primvarName = 'st' if texCoordSet == '0' else 'st' + texCoordSet
-                uvs = usdGeom.CreatePrimvar(primvarName, Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex)
+                uvs = UsdGeom.PrimvarsAPI(usdGeom).CreatePrimvar(primvarName, Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex)
                 uvs.Set(newData)
             elif key == 'COLOR_0':
                 data = accessor.data
